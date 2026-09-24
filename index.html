@@ -1,0 +1,3420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Moody Moon Bunny</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #07011a; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<script>
+'use strict';
+
+/* =====================================================================
+   MOODY MOON BUNNY
+   A sassy 8-bit bunny on the moon. Two ways to play:
+     PLAY    — defend the moon from evil aliens with carrot grenades
+     EXPLORE — wander the moon, chat with aliens, and fly the Carrot
+               Rocket to every planet in the solar system
+   The world renders into a tiny low-res buffer that is scaled up with
+   nearest-neighbour filtering; text is drawn on top at full resolution.
+   ===================================================================== */
+
+// ---------------------------------------------------------------------
+// 1. CONFIG
+// ---------------------------------------------------------------------
+const VIEW_W = 256;
+const VIEW_H = 144;
+const MOON_W = VIEW_W * 3;     // the moon scrolls across three screens in explore mode
+const PLANET_W = VIEW_W * 2;   // other planets are two screens wide
+const GROUND_Y = 126;          // where feet touch the ground
+const GRAVITY = 0.09;          // gentle moon gravity (px / frame²)
+
+// Difficulty (tuned to be forgiving)
+const MAX_HEARTS = 5;
+const START_AMMO = 10;
+const CARROT_PICKUP = 4;
+const HUNGER_DRAIN = 0.016;    // per frame — a full tummy lasts ~1.7 minutes
+const STARVE_INTERVAL = 360;   // frames between heart losses at 0 hunger
+const INVULN_FRAMES = 120;
+const BLAST_RADIUS = 20;
+const THROW_COOLDOWN = 14;
+
+// Space travel
+const LAUNCH_FRAMES = 70;
+const FLIGHT_FRAMES = 170;
+const LANDING_FRAMES = 64;
+const TIP_FRAMES = 720;        // the rocket pop-up closes itself after ~12 s
+const MAP_ORDER = ['mercury', 'venus', 'earth', 'moon', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'];   // by distance from the sun
+const MAP_X = MAP_ORDER.map((_, i) => 40 + i * 24);
+const MAP_Y = 62;
+
+const KEY = { enter: 13, esc: 27, space: 32, left: 37, up: 38, right: 39, down: 40,
+              one: 49, two: 50, a: 65, d: 68, e: 69, f: 70, m: 77, p: 80, q: 81, s: 83, w: 87 };
+
+// ---------------------------------------------------------------------
+// 2. PALETTE (neon on deep space)
+// ---------------------------------------------------------------------
+const C = {
+  space0: '#07011a', space1: '#15053a', space2: '#2a0a5e', space3: '#4b1480',
+  pink: '#ff2a6d', hotPink: '#ff6ec7', cyan: '#05d9e8', blue: '#3d5afe',
+  purple: '#b967ff', yellow: '#fffb96', gold: '#ffd23f', orange: '#ff9f1c',
+  green: '#39ff14', lime: '#b8ff5c', red: '#ff3355', white: '#ffffff',
+  ink: '#2b0f45', black: '#120424', night: '#1d0a3a',
+  moon: '#9b8cd9', moonDark: '#6a58a8', moonShade: '#4a3b80', moonLight: '#c9bfff',
+};
+const NEON = [C.pink, C.orange, C.yellow, C.green, C.cyan, C.purple];
+
+// ---------------------------------------------------------------------
+// 3. SPRITES  ('.' = transparent, other chars map through a palette)
+// ---------------------------------------------------------------------
+const BUNNY_BODY = [
+  'KWWWWWWWWWWWK',
+  'KWWWWWWWWWWWK',
+  'KWWWWWWWWWWWK',
+  'KWCCWWWWWCCWK',
+  '.KWWWWWWWWWK.',
+  '.KSSSSSSSSSK.',
+  'KWWWSWWWWWWWK',
+  'KWWKSWWWWKWWK',
+  'KWWKWWWWWKWWK',
+  '.KKKKKKKKKKK.',
+];
+
+const SPRITE_DATA = {
+  bunnyUp: {
+    pal: 'bunny',
+    rows: [
+      '..KK.....KK..',
+      '.KWPK...KPWK.',
+      '.KWPK...KPWK.',
+      '.KWPK...KPWK.',
+      '..KWK...KWK..',
+      '.KKWKKKKKWKK.',
+      ...BUNNY_BODY,
+    ],
+  },
+  bunnyFlop: {
+    pal: 'bunny',
+    rows: [
+      '..KK.........',
+      '.KWPK........',
+      '.KWPK....KKK.',
+      '.KWPK...KPPWK',
+      '..KWK...KWWK.',
+      '.KKWKKKKKWKK.',
+      ...BUNNY_BODY,
+    ],
+  },
+  carrotShip: {
+    pal: 'carrotShip',
+    rows: [
+      '...G.G.G...',
+      '....GGG....',
+      '....OOO....',
+      '...OOOOO...',
+      '...OoOOO...',
+      '..OOKKKOO..',
+      '..OKCCWKO..',
+      '..OKCCCKO..',
+      '..OOKKKOO..',
+      '..OOOOoOO..',
+      '..OoOOOOO..',
+      '.GOOOOOoOG.',
+      'GGOOoOOOOGG',
+      'GG.OOOOO.GG',
+      'G...OOO...G',
+      '....KKK....',
+      '...K...K...',
+    ],
+  },
+  flyerA: {
+    pal: 'flyer',
+    rows: [
+      '..G.....G..',
+      '...G...G...',
+      '..GGGGGGG..',
+      '.GGEGGGEGG.',
+      'GGGGGGGGGGG',
+      'G.GGGGGGG.G',
+      'G.G.....G.G',
+      '...GG.GG...',
+    ],
+  },
+  flyerB: {
+    pal: 'flyer',
+    rows: [
+      '..G.....G..',
+      'G..G...G..G',
+      'G.GGGGGGG.G',
+      'GGGEGGGEGGG',
+      'GGGGGGGGGGG',
+      '.GGGGGGGGG.',
+      '..G.....G..',
+      '.G.......G.',
+    ],
+  },
+  crawlerA: {
+    pal: 'crawler',
+    rows: [
+      '..K...K..',
+      '...G.G...',
+      '..GGGGG..',
+      '.GKWWWKG.',
+      'GGWWRWWGG',
+      'GGGWWWGGG',
+      'GGGGGGGGG',
+      'G.G.G.G.G',
+    ],
+  },
+  crawlerB: {
+    pal: 'crawler',
+    rows: [
+      '.K.....K.',
+      '..G...G..',
+      '..GGGGG..',
+      '.GKWWWKG.',
+      'GGWWRWWGG',
+      'GGGWWWGGG',
+      'GGGGGGGGG',
+      '.G.G.G.G.',
+    ],
+  },
+  saucer: {
+    pal: 'saucer',
+    rows: [
+      '.....ccccc.....',
+      '....cMMMMMc....',
+      '....cMKMKMc....',
+      '.SSSSSSSSSSSSS.',
+      'SSLSSSSLSSSSLSS',
+      '.DDDDDDDDDDDDD.',
+      '...DD.....DD...',
+    ],
+  },
+  rocket: {
+    pal: 'rocket',
+    rows: ['RR.........', 'RWWWWWWWP..', '.WWBWWWWWPP', 'RWWWWWWWP..', 'RR.........'],
+  },
+  telescope: {
+    pal: 'telescope',
+    rows: ['.....KK', '....KBK', '...KBK.', '..KBK..', '.KBK...', '...K...', '..K.K..', '.K...K.', 'K.....K'],
+  },
+  sign: {
+    pal: 'sign',
+    rows: ['PPPPPPPPP', 'PPPPPYPPP', 'PYYYYYYPP', 'PPPPPYPPP', 'PPPPPPPPP', '....K....', '....K....', '....K....', '....K....'],
+  },
+  rover: {
+    pal: 'rover',
+    rows: ['....KK......', '....K.......', '..WWWWWWW...', '.WWBWWWBWW..', 'WWWWWWWWWWW.', '.KK..KK..KK.', '.KK..KK..KK.'],
+  },
+  cow: {
+    pal: 'cow',
+    rows: ['......KK', 'WKWWWWWW', 'WWWKKWWP', 'WWWWWWW.', 'W.W..W.W'],
+  },
+  satellite: {
+    pal: 'satellite',
+    rows: ['BBB.K.BBB', 'BBBKWKBBB', 'BBB.K.BBB'],
+  },
+  carrot: {
+    pal: 'carrot',
+    rows: ['.g.g.', '..g..', '.OOO.', '.OoO.', '..OO.', '..O..'],
+  },
+  cheese: {
+    pal: 'cheese',
+    rows: ['......Y', '....YYY', '..YYyYY', 'YYYYYYY', 'YyYYYyY', 'YYYYYYY'],
+  },
+  cookie: {
+    pal: 'cookie',
+    rows: ['...P...', '..PPP..', 'PPPPPPP', '.PPwPP.', '..PPP..', '.PP.PP.', 'P.....P'],
+  },
+  heart: {
+    pal: 'heart',
+    rows: ['.RR.RR.', 'RRRRRRR', 'RWRRRRR', '.RRRRR.', '..RRR..', '...R...'],
+  },
+  parachute: {
+    pal: 'parachute',
+    rows: ['..HHHHH..', '.HWHHHWH.', 'HHHHHHHHH', '.K..K..K.', '..K.K.K..', '...KKK...'],
+  },
+};
+
+const PAL = {
+  bunny:      { K: C.ink, W: '#f7f0ff', P: C.hotPink, C: '#ffa3d7', S: C.cyan },
+  carrotShip: { G: C.green, O: C.orange, o: '#ffd08a', K: C.ink, C: C.cyan, W: C.white },
+  flyer:      { G: C.pink, E: C.lime },
+  crawler:    { G: '#9dff3c', K: C.hotPink, W: C.white, R: C.red },
+  saucer:     { c: '#7df9ff', M: '#5cffc8', K: C.ink, S: C.moonLight, L: C.yellow, D: C.moonDark },
+  ufo:        { c: C.hotPink, M: C.lime, K: C.ink, S: '#8e8aa8', L: C.cyan, D: C.moonShade },
+  rocket:     { R: C.pink, W: '#f7f0ff', B: C.cyan, P: C.pink },
+  telescope:  { K: C.moonLight, B: C.purple },
+  sign:       { P: C.hotPink, Y: C.yellow, K: C.moonLight },
+  rover:      { W: '#e0d8ee', B: C.cyan, K: C.ink },
+  cow:        { W: C.white, K: C.ink, P: '#ffa3d7' },
+  satellite:  { B: C.blue, K: C.moonLight, W: C.yellow },
+  carrot:     { g: C.green, O: C.orange, o: '#ffd08a' },
+  cheese:     { Y: C.yellow, y: '#d9b233' },
+  cookie:     { P: C.gold, w: '#8a4b2a' },
+  heart:      { R: C.pink, W: C.white },
+  heartEmpty: { R: '#3a1d5c', W: '#5a3d7c' },
+  parachute:  { H: C.hotPink, W: C.white, K: C.moonLight },
+};
+
+// Alien species — one per world. `bodyKey` is recoloured per character.
+const SPECIES = {
+  friend: {   // moon folk: big-eyed and antenna'd
+    bodyKey: 'M',
+    pal: { Y: C.yellow, M: '#7df9ff', W: C.white, K: C.ink, P: C.hotPink },
+    frames: [
+      ['Y.....Y', '.M...M.', '..MMM..', '.MWMWM.', '.MKMKM.', 'M.MPM.M', '..MMM..', '..M.M..'],
+      ['Y.....Y', '.M...M.', '..MMM.M', '.MWMWMM', '.MKMKM.', 'M.MPM..', '..MMM..', '..M.M..'],
+    ],
+  },
+  rockling: {   // Mars: little one-eyed boulders with a crystal on top
+    bodyKey: 'B',
+    pal: { K: '#4a140e', B: '#ffcf8a', W: C.white, E: C.ink, A: C.cyan },
+    frames: [
+      ['...AA...', '..KKKK..', '.KBBBBK.', 'KBBWWBBK', 'KBBWEBBK', 'KBBBBBBK', '.KBBBBK.', '.KK..KK.'],
+      ['...AA...', '..KKKK..', '.KBBBBK.', 'KBBWWBBK', 'KBBEWBBK', 'KBBBBBBK', '.KBBBBK.', '..KKKK..'],
+    ],
+  },
+  sparky: {   // Venus: friendly flame spirits
+    bodyKey: 'B',
+    pal: { A: C.orange, B: C.yellow, W: C.white, E: C.ink },
+    frames: [
+      ['....A...', '...AA...', '..ABBA..', '.ABBBBA.', 'ABWBBWBA', 'ABEBBEBA', '.ABBBBA.', '..AAAA..'],
+      ['...A....', '...AA.A.', '..ABBA..', '.ABBBBA.', 'ABWBBWBA', 'ABEBBEBA', '.ABBBBA.', '..AAAA..'],
+    ],
+  },
+  jelly: {   // Saturn's rings: floaty crystal jellyfish
+    bodyKey: 'B',
+    float: true,
+    pal: { B: C.purple, A: '#e0c8ff', W: C.white, E: C.ink },
+    frames: [
+      ['..BBBB..', '.BAAAAB.', 'BAWAAWAB', 'BAEAAEAB', 'BBBBBBBB', '.B.B.B.B', 'B.B.B.B.', '........'],
+      ['..BBBB..', '.BAAAAB.', 'BAWAAWAB', 'BAEAAEAB', 'BBBBBBBB', 'B.B.B.B.', '.B.B.B.B', '........'],
+    ],
+  },
+  zoomer: {   // Mercury: speedy little sun-critters with motion lines
+    bodyKey: 'B',
+    pal: { B: '#ffb347', W: C.white, E: C.ink, A: C.yellow },
+    frames: [
+      ['....BBB.', '...BBBBB', 'AA.BWBWB', '...BEBEB', 'AA.BBBBB', '...BBBBB', '....BBB.', '....B.B.'],
+      ['....BBB.', '...BBBBB', '.A.BWBWB', 'A..BEBEB', '.A.BBBBB', '...BBBBB', '....BBB.', '...B..B.'],
+    ],
+  },
+  veggie: {   // Earth: walking vegetables. The bunny has... feelings about this.
+    bodyKey: 'B',
+    pal: { G: C.green, B: C.orange, W: C.white, E: C.ink, C: C.hotPink },
+    frames: [
+      ['.G.G.G..', '..GGG...', '.BBBBB..', '.BWBWB..', '.BEBEB..', 'B.BCB.B.', '..BBB...', '..B.B...'],
+      ['.G.G.G..', '..GGG...', '.BBBBB..', '.BWBWB..', 'BBEBEBB.', '..BCB...', '..BBB...', '..B.B...'],
+    ],
+  },
+  floater: {   // Jupiter: puffy gas-balloon creatures
+    bodyKey: 'B',
+    float: true,
+    pal: { B: '#ffcf8a', A: '#c84030', W: C.white, E: C.ink },
+    frames: [
+      ['..BBBB..', '.BBAABB.', 'BBWBBWBB', 'BBEBBEBB', 'BBBBBBBB', '.BBBBBB.', '..A..A..', '.A....A.'],
+      ['..BBBB..', '.BBAABB.', 'BBWBBWBB', 'BBEBBEBB', 'BBBBBBBB', '.BBBBBB.', '.A....A.', '..A..A..'],
+    ],
+  },
+  gem: {   // Uranus: diamond folk (it rains diamonds there)
+    bodyKey: 'B',
+    pal: { B: '#7fe8ff', A: '#dffcff', W: C.white, E: C.ink },
+    frames: [
+      ['...BB...', '..BAAB..', '.BWBBWB.', 'BAEBBEAB', '.BAAAAB.', '..BAAB..', '...BB...', '..B..B..'],
+      ['...BB...', '..BAAB..', '.BWBBWB.', 'BAEBBEAB', '.BAAAAB.', '..BAAB..', '...BB...', '.B....B.'],
+    ],
+  },
+  pengloo: {   // Neptune: penguin-ish snow aliens
+    bodyKey: 'K',
+    pal: { K: '#1b3a8a', W: C.white, E: C.ink, A: C.orange },
+    frames: [
+      ['...A....', '..KKKK..', '.KKWWKK.', '.KWEWEK.', '.KWWWWK.', 'KKWAAWKK', '.KWWWWK.', '..A..A..'],
+      ['...A....', '..KKKK..', '.KKWWKK.', 'KKWEWEKK', '.KWWWWK.', '.KWAAWK.', '.KWWWWK.', '..A..A..'],
+    ],
+  },
+};
+
+const SPR = {};   // baked p5.Graphics, filled in bakeSprites()
+
+// ---------------------------------------------------------------------
+// 4. WORLDS — the moon plus four planets, each with its own look & folk
+//    Theme methods receive the p5.Graphics to paint into; `this` is the theme.
+// ---------------------------------------------------------------------
+const MOON_GALAXIES = [
+  { x: 74,  y: 32, size: 13, tilt: -0.4, inner: C.white, outer: C.purple },
+  { x: 162, y: 88, size: 10, tilt: 0.5,  inner: C.white, outer: C.cyan },
+  { x: 236, y: 96, size: 7,  tilt: -0.2, inner: C.white, outer: C.hotPink },
+  { x: 14,  y: 94, size: 6,  tilt: 0.3,  inner: C.white, outer: C.yellow },
+];
+const SOLAR = {
+  x: 118, y: 26,
+  planets: [
+    { rx: 9,  ry: 3,  r: 0, col: C.moonLight, speed: 0.030 },
+    { rx: 14, ry: 5,  r: 1, col: C.orange,    speed: 0.020 },
+    { rx: 20, ry: 7,  r: 1, col: C.cyan,      speed: 0.013 },
+    { rx: 27, ry: 10, r: 1, col: C.red,       speed: 0.009 },
+  ],
+};
+const MOON_CRATERS = [
+  [30, 134, 7, 2], [88, 130, 5, 2], [140, 138, 9, 3], [200, 131, 6, 2], [240, 139, 5, 2],
+  [112, 141, 4, 1], [172, 128, 3, 1], [60, 140, 4, 1], [300, 139, 5, 2], [400, 135, 16, 4],
+  [480, 140, 6, 2], [560, 131, 4, 1], [610, 138, 7, 2], [690, 132, 5, 2], [750, 140, 4, 1],
+];
+const MOON_HABITATS = [{ x: 20, r: 12 }, { x: 238, r: 9 }, { x: 650, r: 13 }];
+const FLAG_X = 150;
+
+const THEMES = {
+  moon: {
+    name: 'THE MOON', short: 'MOON', tagline: 'home sweet crater', hudColor: C.moonLight,
+    width: MOON_W, shipX: 136, gravity: 1, seed: 2024,
+    horizon: [1.5, 0.045, 1, 0.11],
+    sky: [C.space0, C.space1, C.space2, C.space3],
+    nebulae: [{ x: 190, y: 30, r: 60, col: C.pink }, { x: 50, y: 86, r: 55, col: C.cyan }, { x: 130, y: 66, r: 70, col: C.purple }],
+    farStars: 160, twinkles: 60, comets: true, traffic: true,
+    ground: { light: C.moonLight, base: C.moon, dark: C.moonDark, shade: C.moonShade },
+    weather: null,
+    icon: { base: C.moonLight, shade: C.moonDark, mapR: 3 },
+    snackLines: ["Snacks with a view of Earth. Fancy.", "Moon picnic. Party of one. Perfect."],
+    species: 'friend',
+    arrival: "Home sweet crater. Did anyone touch my stuff?",
+    idle: [
+      "Ooh, a crater. Riveting.",
+      "Moon dust on my paws. Ugh. Chic, though.",
+      "Someone should build a carrot cafe here.",
+      "Is that Saturn? Show-off, with those rings.",
+      "That carrot rocket could take me anywhere...",
+    ],
+    paintSky(g, rng) {
+      MOON_GALAXIES.forEach(gx => paintGalaxy(g, gx, rng));
+      paintOrbits(g);
+      paintRingedPlanet(g, 214, 58, 8, 17, 4);
+      paintEarth(g, 34, 52);
+    },
+    paintGround(g, rng) {
+      paintCraters(g, this, MOON_CRATERS);
+      paintSpeckles(g, rng, this, 150, [C.moonShade, C.moonLight]);
+      paintCrystals(g, rng, this, 20, [C.cyan, C.hotPink]);
+      const habitats = MOON_HABITATS.map(h => paintHabitat(g, this, h));
+      paintCarrotGarden(g, this, 270, 306);
+      paintProp(g, this, SPR.sign, 100);
+      paintProp(g, this, SPR.telescope, 456);
+      return { habitats };
+    },
+    drawSkyFx(g, w, t) { drawSolarSystem(g, t); },
+    drawGroundFx(g, w, t) {
+      w.props.habitats.forEach((h, hi) => {
+        h.windows.forEach((win, i) => {
+          const lit = (Math.floor(t / 40) + i + hi) % 4 !== 0;
+          g.fill(lit ? [C.yellow, C.hotPink, C.cyan][(i + hi) % 3] : '#1a0e33');
+          g.rect(win.x, win.y, 2, 2);
+        });
+        if (Math.floor(t / 20) % 2) { g.fill(C.red); g.rect(h.beacon.x, h.beacon.y, 1, 1); }
+      });
+      drawCarrotFlag(g, this, FLAG_X, t);
+    },
+    npcs: [
+      { name: 'ZIP', x: 62, color: '#7df9ff', chats: [
+        ["Welcome to the Moon! Population: you, me, and three rocks.", "And I'm the cutest rock. Obviously."],
+        ["Walk right to explore! There's a whole moon out there.", "Walking? Ugh. Fine. For science."],
+        ["That carrot rocket can fly you to other planets!", "A rocket shaped like a snack? Finally, good design."],
+      ] },
+      { name: 'BLORP', x: 190, color: '#5cffc8', chats: [
+        ["Blorp! Is your fur made of cheese?", "Excuse me?! It's premium fluff."],
+        ["I traded my spaceship for a wheel of moon cheese.", "Honestly? Iconic life choice."],
+        ["Want to hear a joke? ...Blorp.", "That's... just your name."],
+      ] },
+      { name: 'QUEEN MARSHA', x: 330, color: '#ffb3f0', crown: true, chats: [
+        ["I am Marsha, Queen of Mars. Bow, little bunny.", "I bow to no one. Except snacks."],
+        ["I hear you keep telling on people. To me.", "Only the rude ones, Your Redness."],
+        ["Visit my home planet, Mars! Very red. Very chic.", "Red's not my color. Pink, maybe."],
+      ] },
+      { name: 'GLIMMER', x: 470, color: '#fffb96', chats: [
+        ["Look! That swirly thing is a galaxy far, far away.", "Can I get snacks delivered from there?"],
+        ["Saturn has loads of moons. You live on just one.", "Quality over quantity, sweetie."],
+        ["Make a wish on a shooting star!", "I wish for... more carrots. Duh."],
+      ] },
+      { name: 'NOODLE', x: 600, color: '#d9a6ff', chats: [
+        ["*plays space kazoo* Bzzzrrp~", "My ears. My beautiful ears."],
+        ["I'm writing a song about you! It's called 'Grumpy Fluff'.", "...Okay, I'd listen to that."],
+        ["Wanna start a band? You could play drums!", "Lead singer or nothing, darling."],
+      ] },
+      { name: 'ORBIT', x: 722, color: '#ffb366', chats: [
+        ["Um... are you a big fluffy alien?", "I'm a bunny. The superior species."],
+        ["I lost my balloon. It floated into space.", "Everything floats up here, kiddo."],
+        ["You're my best friend now!", "Ugh. Fine. Best friends. Don't make it weird."],
+      ] },
+    ],
+  },
+
+  venus: {
+    name: 'VENUS', short: 'VENUS', tagline: 'hot pink volcano world', hudColor: C.hotPink,
+    width: PLANET_W, shipX: 60, gravity: 1.7, seed: 777,
+    horizon: [1, 0.06, 0.6, 0.15],
+    sky: ['#2a0718', '#64153a', '#b83a5e', '#ff9a52'],
+    nebulae: [{ x: 128, y: 40, r: 140, col: C.gold }, { x: 40, y: 20, r: 70, col: C.hotPink }],
+    farStars: 12, twinkles: 8, comets: false,
+    ground: { light: '#ff9a52', base: '#5a1f3d', dark: '#3a1030', shade: '#2a0a22' },
+    weather: { type: 'embers', count: 35, colors: [C.orange, C.yellow, C.pink] },
+    icon: { base: '#ffb35c', band: '#ff6ec7', shade: '#b8603a' },
+    snackLines: ["Extra crispy. Thanks, volcanoes.", "Spicy! Everything here is spicy."],
+    species: 'sparky',
+    arrival: "It's SO hot. My fur is not rated for this.",
+    idle: [
+      "I'm melting. Dramatically. Fabulously.",
+      "Who put a volcano in my way? Gary?",
+      "Hot pink sky. At least it's on brand.",
+    ],
+    volcanoes: [{ x: 120, w: 50, h: 26 }, { x: 270, w: 36, h: 18 }, { x: 460, w: 60, h: 30 }],
+    paintSky(g) {
+      [[24, 'rgba(255,251,150,0.10)'], [17, 'rgba(255,210,63,0.22)'], [12, C.gold], [9, '#fffbe0']]
+        .forEach(([r, col]) => pixelDisc(g, 190, 42, r, col));
+      for (let band = 0; band < 5; band++) {   // thick swirling cloud bands
+        g.fill('rgba(255,200,220,0.16)');
+        for (let x = 0; x < VIEW_W; x++) g.rect(x, Math.round(18 + band * 17 + Math.sin(x * 0.05 + band) * 3), 1, 2);
+      }
+    },
+    paintBackdrop(g) { return { peaks: this.volcanoes.map(v => paintVolcano(g, this, v)) }; },
+    paintGround(g, rng) {
+      paintSpeckles(g, rng, this, 90, ['#2a0a22', '#7a2f55']);
+      paintLavaCracks(g, rng, this, 18);
+      [205, 355, 395].forEach((x, i) => paintSpire(g, this, x, 8 + i * 3, C.hotPink, '#ffd1ec'));
+    },
+    updateFx(w) {
+      if (random() > 0.07) return;   // volcano puffs
+      const p = random(w.props.peaks);
+      particles.push(new Particle(p.x + random(-1, 1), p.y - 1, random(-0.15, 0.15), random(-0.5, -0.3),
+                                  random(50, 90), random([C.orange, C.yellow, '#8a4b6a', '#c26a8a']), -0.002));
+    },
+    drawGroundFx(g, w, t) {
+      w.props.peaks.forEach((p, i) => {
+        g.fill((Math.floor(t / 8) + i) % 2 ? C.yellow : C.orange);
+        g.rect(p.x - 1, p.y, 3, 1);
+      });
+    },
+    npcs: [
+      { name: 'BLAZE', x: 160, color: C.yellow, chats: [
+        ["It's a chilly 460 degrees today! Sweater weather!", "My fur is literally sizzling."],
+        ["Want a hug? I promise I'm only a little on fire.", "Hard pass. Love you though."],
+        ["The clouds rain acid here. So refreshing!", "That's... not what refreshing means."],
+      ] },
+      { name: 'CINDER', x: 310, color: '#ff9ad5', pal: { A: C.pink }, chats: [
+        ["Welcome to Venus! We spin backwards here!", "I'm not spinning. I'm sassing."],
+        ["My volcano is named Gary. Say hi to Gary.", "Hi, Gary. You're very... eruptive."],
+        ["One day here is longer than a whole year!", "So nap time lasts forever? Moving in."],
+      ] },
+      { name: 'FLICKER', x: 425, color: C.white, pal: { A: C.cyan }, chats: [
+        ["*flickers nervously* Are you a marshmallow?", "Do NOT toast me."],
+        ["I'm the coolest flame here. Literally. I'm blue.", "Cool colors. Hot drama. I respect it."],
+        ["Come back soon! Bring more fluff!", "The fluff will return. Maybe."],
+      ] },
+    ],
+  },
+
+  mars: {
+    name: 'MARS', short: 'MARS', tagline: 'the dusty red desert', hudColor: C.orange,
+    width: PLANET_W, shipX: 60, gravity: 1.4, seed: 404,
+    horizon: [2.5, 0.03, 1.5, 0.09],
+    sky: ['#12030c', '#3d0b1c', '#7a1f22', '#c9502a'],
+    nebulae: [{ x: 70, y: 40, r: 60, col: C.orange }, { x: 200, y: 70, r: 50, col: C.hotPink }],
+    farStars: 70, twinkles: 25, comets: true,
+    ground: { light: '#ffb38a', base: '#d9663b', dark: '#a8402a', shade: '#6e2418' },
+    weather: { type: 'dust', count: 45, colors: ['rgba(255,179,138,0.7)', 'rgba(217,102,59,0.8)'] },
+    icon: { base: '#d9663b', shade: '#8a2a1f', mapR: 4 },
+    snackLines: ["A little dusty. Still delicious.", "Red planet, orange snack. Iconic."],
+    species: 'rockling',
+    arrival: "Red dust everywhere. Who decorated this place?",
+    idle: [
+      "Everything here is red. Even my mood.",
+      "If I find a Mars carrot, I'm keeping it.",
+      "Dust in my ears. Unacceptable.",
+    ],
+    mesas: [{ x: 30, w: 30, h: 14 }, { x: 190, w: 44, h: 18 }, { x: 370, w: 26, h: 11 }, { x: 470, w: 36, h: 16 }],
+    paintSky(g) {
+      pixelDisc(g, 205, 26, 6, 'rgba(255,251,150,0.25)');   // a small, far-away sun
+      pixelDisc(g, 205, 26, 3, C.yellow);
+      paintPlanet(g, 60, 30, 5, '#a58b7a', null, '#5e4a40');   // Phobos
+      g.fill('#5e4a40'); g.rect(58, 29, 2, 1); g.rect(61, 32, 1, 1);
+      paintPlanet(g, 150, 46, 2, '#c9b3a0', null, '#7a6a5a');  // Deimos
+      paintSparkle(g, 112, 18, C.cyan, 'rgba(125,249,255,0.5)');   // Earth, very far away
+    },
+    paintBackdrop(g) { this.mesas.forEach(m => paintMesa(g, this, m)); },
+    paintGround(g, rng) {
+      paintSpeckles(g, rng, this, 120, ['#6e2418', '#ffb38a']);
+      paintRocks(g, rng, this, 14, '#8a2f25', '#c95a3a');
+      const rover = paintProp(g, this, SPR.rover, 250);
+      return { roverBeacon: { x: rover.x + 4, y: rover.y - 1 } };
+    },
+    drawGroundFx(g, w, t) {
+      if (Math.floor(t / 25) % 2) { g.fill(C.red); g.rect(w.props.roverBeacon.x, w.props.roverBeacon.y, 1, 1); }
+    },
+    npcs: [
+      { name: 'PEBBLES', x: 150, color: '#ffcf8a', chats: [
+        ["Hi! I'm a rock. A rock with feelings.", "Same, honestly."],
+        ["Mars is red because we're all blushing.", "Understandable. I'm very cute."],
+        ["Wanna play fetch? I'll be the ball.", "...I'm not throwing you, Pebbles."],
+      ] },
+      { name: 'DUSTIN', x: 305, color: '#e8a070', chats: [
+        ["Dust storm season! My favorite accessory.", "Sand in my fur. My LEAST favorite accessory."],
+        ["I've been waiting for a bus for 40 years.", "Buses don't come to Mars, Dustin."],
+        ["That rover says hi. It says hi every day.", "It's a robot. It's contractually obligated."],
+      ] },
+      { name: 'RUBY', x: 430, color: '#ff8aa8', pal: { A: C.hotPink }, chats: [
+        ["Ooh, a fluffy visitor! Are you a cloud?", "A cloud with attitude, yes."],
+        ["I collect shiny crystals. Want one?", "Only if it's carrot-flavored."],
+        ["Tell Queen Marsha we miss her!", "She's on MY moon, eating MY snacks."],
+      ] },
+    ],
+  },
+
+  saturn: {
+    name: 'SATURN RINGS', short: 'SATURN', tagline: 'walking on icy rings', hudColor: C.gold,
+    width: PLANET_W, shipX: 60, gravity: 1.2, seed: 616,
+    horizon: [0.6, 0.02, 0.4, 0.07],
+    sky: ['#050316', '#0d1440', '#1a2d6b', '#3a5aa0'],
+    nebulae: [{ x: 60, y: 70, r: 60, col: C.purple }, { x: 220, y: 90, r: 50, col: C.cyan }],
+    farStars: 170, twinkles: 60, comets: true,
+    ground: { light: C.white, base: '#c9d6ff', mid: '#aabcf5', dark: '#8a9ad9', shade: '#5a6ab0' },
+    stripes: true,
+    weather: { type: 'sparkle', count: 30, colors: [C.white, C.cyan, C.yellow] },
+    icon: { base: C.gold, band: C.orange, shade: '#b3541e', ring: true, mapR: 4 },
+    snackLines: ["Ice-cold snack. Refreshing.", "Snacking on the rings. So fancy."],
+    species: 'jelly',
+    arrival: "Walking on rings? Fancy. I deserve this.",
+    idle: [
+      "These rings are basically a giant ice rink.",
+      "Saturn, darling, those rings are a LOOK.",
+      "I could skate here. I won't. But I could.",
+    ],
+    paintSky(g) {
+      paintRingedPlanet(g, 140, 4, 40, 112, 18, -0.1);
+      paintPlanet(g, 40, 32, 3, '#ffcf8a', null, '#b3803a');   // Titan
+    },
+    paintGround(g, rng) {
+      paintSpeckles(g, rng, this, 80, [C.white, '#5a6ab0']);
+      paintRocks(g, rng, this, 16, C.white, '#aee8ff');
+      [220, 232, 360].forEach((x, i) => paintSpire(g, this, x, 7 + (i % 2) * 5, C.cyan, C.white));
+    },
+    initFx() {
+      return { chunks: Array.from({ length: 10 }, () => ({ x: random(VIEW_W), y: random(46, 100), s: random(0.3, 1), w: random([1, 2, 3]) })) };
+    },
+    updateFx(w) {
+      w.fx.chunks.forEach(c => { c.x -= c.s * 0.12; if (c.x < -4) c.x = VIEW_W + 2; });
+    },
+    drawSkyFx(g, w) {   // drifting ring ice
+      w.fx.chunks.forEach(c => {
+        g.fill(C.white); g.rect(Math.round(c.x), Math.round(c.y), c.w, 1);
+        g.fill('#8a9ad9'); g.rect(Math.round(c.x), Math.round(c.y) + 1, c.w, 1);
+      });
+    },
+    npcs: [
+      { name: 'SHIMMER', x: 150, color: C.purple, chats: [
+        ["Welcome to the rings! Mind the ice, it's slippery.", "I never slip. I glide, darling."],
+        ["These rings are made of ice and dust. Like me!", "I'm made of sass and snacks."],
+        ["Look up! Isn't Saturn gorgeous?", "Pretty. Almost as pretty as me."],
+      ] },
+      { name: 'WOBBLE', x: 295, color: C.cyan, pal: { A: '#b0fbff' }, chats: [
+        ["Blub. Blub blub. (That means hello.)", "Blub to you too, I guess."],
+        ["I float because I have no worries.", "Teach me. I have SO many worries."],
+        ["Is it true you have ears? Like, on purpose?", "Premium ears. Custom made."],
+      ] },
+      { name: 'HALO', x: 425, color: C.gold, pal: { A: C.yellow }, chats: [
+        ["I'm a ring guardian. I guard... rings.", "Very important job. Very sparkly."],
+        ["Saturn could float in a giant bathtub!", "So could I. Bubble bath, please."],
+        ["Safe travels, fluffy comet!", "Fluffy comet. I'm keeping that."],
+      ] },
+    ],
+  },
+
+  mercury: {
+    name: 'MERCURY', short: 'MERCURY', tagline: 'scorched little speedster', hudColor: C.gold,
+    width: PLANET_W, shipX: 60, gravity: 1.3, seed: 101,
+    horizon: [1.2, 0.05, 0.8, 0.13],
+    sky: ['#000000', '#050204', '#140806', '#2e1208'],   // no atmosphere: black sky, even by day
+    nebulae: [],
+    farStars: 120, twinkles: 40, comets: true,
+    ground: { light: '#d8c8b8', base: '#9a8878', dark: '#6e6054', shade: '#4a3e36' },
+    weather: { type: 'dust', count: 30, colors: ['rgba(255,240,180,0.45)', 'rgba(255,200,120,0.35)'] },   // solar wind
+    icon: { base: '#b8a898', shade: '#6e6054', mapR: 3 },
+    snackLines: ["Toasty! Mercury-grilled snacks.", "Warm snack. The sun cooked it for me."],
+    species: 'zoomer',
+    arrival: "So close to the sun. My fur is getting a tan.",
+    idle: [
+      "Bright. Hot. Tiny. Like a spicy snack.",
+      "Where are my sunglasses? Oh right. Bunny.",
+      "No air, no moons, no carrots. Zero stars.",
+    ],
+    sun: { x: 54, y: 54, r: 36 },
+    paintSky(g) {
+      const { x, y, r } = this.sun;   // the sun is ENORMOUS from here
+      [[r + 10, 'rgba(255,159,28,0.12)'], [r + 5, 'rgba(255,210,63,0.22)'], [r, C.gold], [r - 6, '#fff1a8'], [r - 14, '#fffbe0']]
+        .forEach(([rr, col]) => pixelDisc(g, x, y, rr, col));
+    },
+    paintGround(g, rng) {
+      paintCraters(g, this, randomCraters(rng, this, g.width, 22));
+      paintSpeckles(g, rng, this, 140, ['#4a3e36', '#d8c8b8']);
+      paintRocks(g, rng, this, 10, '#6e6054', '#b8a898');
+    },
+    drawSkyFx(g, w, t) {   // solar flares licking off the sun
+      const { x, y, r } = this.sun;
+      g.fill(C.orange);
+      for (let k = 0; k < 3; k++) {
+        const a = t * 0.01 + k * 2.1;
+        for (let s = -0.25; s <= 0.25; s += 0.04) {
+          const rr = r + 2 + Math.abs(Math.sin(s * 12 + t * 0.08)) * 4;
+          const py = Math.round(y + Math.sin(a + s) * rr);
+          if (py < GROUND_Y - 8) g.rect(Math.round(x + Math.cos(a + s) * rr), py, 1, 1);
+        }
+      }
+    },
+    npcs: [
+      { name: 'ZOOM', x: 150, color: '#ffb347', chats: [
+        ["Hi-bye-hi! Mercury is the fastest planet! ZOOM!", "Slow down. You're making my ears dizzy."],
+        ["A year here is only 88 days! Birthdays all the time!", "More birthdays means more cake. I'm listening."],
+        ["It's super hot by day and freezing at night!", "So... like my moods, then."],
+      ] },
+      { name: 'DASH', x: 300, color: '#ff8a5c', pal: { A: C.white }, chats: [
+        ["You're so close to the sun! Did you bring sunscreen?", "My fur IS sunscreen. Obviously."],
+        ["I raced a comet once. I lost. It's fine.", "Next time, pack snacks for energy."],
+        ["Mercury has no moons. Can I borrow yours?", "Absolutely not. Get your own moon."],
+      ] },
+      { name: 'SOLAR', x: 430, color: C.yellow, pal: { A: C.orange }, chats: [
+        ["I'm solar-powered! I'm always charged!", "I'm snack-powered. I'm always hungry."],
+        ["Look at the sun! No wait, DON'T look at the sun.", "Too late. I see spots. Cute spots, though."],
+        ["Come back when you're faster!", "I'm fast. At napping."],
+      ] },
+    ],
+  },
+
+  earth: {
+    name: 'EARTH', short: 'EARTH', tagline: 'the carrot capital', hudColor: C.green,
+    width: PLANET_W, shipX: 60, gravity: 1.8, seed: 303,
+    horizon: [1.5, 0.035, 1, 0.09],
+    sky: ['#2f6fe0', '#5c9cff', '#9ccaff', '#dff3ff'],   // a bright daytime sky
+    nebulae: [],
+    farStars: 0, twinkles: 0, comets: false,
+    ground: { light: '#b8ff5c', base: '#39c43a', dark: '#1f8a2e', shade: '#6a3e1a' },
+    weather: { type: 'petals', count: 26, colors: ['#ffc0e0', C.white, '#ffe0f0'] },
+    icon: { base: C.blue, band: '#4ad66d', shade: '#1b2a8a' },
+    snackLines: ["Earth snacks hit different.", "Fresh from the farm. Chef's kiss."],
+    species: 'veggie',
+    arrival: "EARTH! The carrot capital of the universe!",
+    idle: [
+      "I can smell the carrots. I can HEAR them.",
+      "Blue sky? Green grass? Suspiciously nice.",
+      "I should retire here. On a carrot farm.",
+    ],
+    paintSky(g) {
+      pixelDisc(g, 206, 24, 10, 'rgba(255,251,150,0.35)');
+      pixelDisc(g, 206, 24, 7, C.yellow);
+      paintPlanet(g, 58, 22, 4, 'rgba(255,255,255,0.75)', null, 'rgba(201,191,255,0.6)');   // daytime moon (home!)
+      [[30, 44, 14], [110, 30, 18], [170, 58, 12], [236, 46, 10], [140, 80, 16]].forEach(([x, y, w]) => paintCloud(g, x, y, w));
+    },
+    paintBackdrop(g) { paintHills(g, this, '#2a9a3a', '#5cd65c'); },
+    paintGround(g, rng) {
+      paintSpeckles(g, rng, this, 120, ['#1f8a2e', '#b8ff5c']);
+      paintFlowers(g, rng, this, 40);
+      paintCarrotGarden(g, this, 190, 270, '#6a3e1a');
+      paintBarn(g, this, 128);
+      [18, 300, 360, 470].forEach(x => paintTree(g, this, x));
+    },
+    initFx() {
+      return { birds: Array.from({ length: 4 }, (_, i) => ({ x: random(VIEW_W), y: 30 + i * 9 + random(4), s: random(0.3, 0.6) })) };
+    },
+    updateFx(w) {
+      w.fx.birds.forEach(b => { b.x += b.s; if (b.x > VIEW_W + 4) b.x = -4; });
+    },
+    drawSkyFx(g, w, t) {
+      g.fill(C.ink);
+      w.fx.birds.forEach((b, i) => {
+        const x = Math.round(b.x), y = Math.round(b.y);
+        const wing = Math.floor((t + i * 7) / 10) % 2 ? -1 : 1;
+        g.rect(x, y, 1, 1);
+        g.rect(x - 1, y, 1, 1); g.rect(x + 1, y, 1, 1);
+        g.rect(x - 2, y + wing, 1, 1); g.rect(x + 2, y + wing, 1, 1);
+      });
+    },
+    npcs: [
+      { name: 'CARLOTTA', x: 175, color: C.orange, chats: [
+        ["EEK! A bunny! Please don't eat me!", "Relax. You're... safe. Probably."],
+        ["I'm the prettiest carrot in the whole field.", "Stop. You're making me hungry AND emotional."],
+        ["Welcome to Earth! Home of carrots!", "Best planet. Ten stars. Very crunchy."],
+      ] },
+      { name: 'BEETRICE', x: 310, color: '#c0307a', chats: [
+        ["I'm a beet, not a carrot. So we're cool, right?", "We're cool. For now."],
+        ["Humans put me in salads. The nerve!", "Same thing happens to carrots. Tragic."],
+        ["Want to join our veggie band? We rock!", "Only if it's called The Crunchy Bunch."],
+      ] },
+      { name: 'RADDY', x: 430, color: '#ff6ec7', pal: { G: '#7de06a' }, chats: [
+        ["Earth has oceans, forests, and... YOU!", "I know. I'm a whole ecosystem of cute."],
+        ["Did you know Earth only has one moon?", "Yes. It's MINE. I live there."],
+        ["See ya, fluffball! Don't eat my cousins!", "No promises. Kidding. Mostly."],
+      ] },
+    ],
+  },
+
+  jupiter: {
+    name: 'JUPITER', short: 'JUPITER', tagline: 'king of the gas giants', hudColor: '#ffcf8a',
+    width: PLANET_W, shipX: 60, gravity: 2.2, seed: 505,
+    horizon: [3, 0.02, 1.5, 0.06],
+    sky: ['#2a1206', '#6b3010', '#b8683a', '#e8b080'],
+    nebulae: [],
+    farStars: 30, twinkles: 10, comets: false,
+    ground: { light: '#fff4e0', base: '#f0d0a0', dark: '#d9a070', shade: '#b8704a' },   // puffy cloud tops
+    weather: { type: 'dust', count: 40, colors: ['rgba(255,244,224,0.6)', 'rgba(217,160,112,0.6)'] },   // howling winds
+    icon: { base: '#e8b080', band: '#b8683a', shade: '#8a4a2a', mapR: 8 },
+    snackLines: ["Heavy snack for a heavy planet.", "Eating fast before a storm steals it."],
+    species: 'floater',
+    arrival: "Whoa, my hops are tiny here. Rude, gravity.",
+    idle: [
+      "That big red storm is staring at me.",
+      "So big. So loud. So... me, actually.",
+      "A cloud floor. Very trusting of me.",
+    ],
+    paintSky(g) {
+      for (let band = 0; band < 12; band++) {   // swirly cloud belts
+        g.fill(band % 2 ? 'rgba(240,216,176,0.22)' : 'rgba(138,74,42,0.22)');
+        for (let x = 0; x < VIEW_W; x++) g.rect(x, Math.round(band * 10 + Math.sin(x * 0.04 + band) * 2), 1, 5);
+      }
+      pixelEllipse(g, 184, 56, 22, 9, '#b8402a');   // the Great Red Spot
+      pixelEllipse(g, 184, 56, 16, 6, '#d9603a');
+      pixelEllipse(g, 184, 56, 8, 3, '#f0906a');
+      paintPlanet(g, 104, 30, 3, '#f0e060', null, '#b0a030');   // Io
+      paintPlanet(g, 70, 46, 2, '#f0f0ff', null, '#a8b0c8');   // Europa
+    },
+    paintBackdrop(g) {
+      [40, 150, 250, 330, 450].forEach((x, i) => paintCloudTower(g, this, x, 10 + (i % 3) * 5));
+    },
+    paintGround(g, rng) {
+      paintSpeckles(g, rng, this, 110, ['#fff4e0', '#b8704a']);
+    },
+    initFx() { return { bolt: null }; },
+    updateFx(w) {
+      const fx = w.fx;
+      if (fx.bolt && --fx.bolt.t <= 0) fx.bolt = null;
+      if (!fx.bolt && random() < 0.004) {
+        fx.bolt = { t: 10, x: random(20, VIEW_W - 20) };
+        Sfx.thunder();
+      }
+    },
+    drawSkyFx(g, w) {   // lightning deep in the clouds
+      const bolt = w.fx.bolt;
+      if (!bolt) return;
+      if (bolt.t > 7) { g.fill('rgba(255,255,255,0.18)'); g.rect(0, 0, VIEW_W, GROUND_Y); }
+      g.fill(bolt.t % 2 ? C.yellow : C.white);
+      let x = bolt.x;
+      for (let y = 20; y < 80; y += 2) {
+        x += Math.floor(random(-2, 3));
+        g.rect(Math.round(x), y, 1, 2);
+      }
+    },
+    npcs: [
+      { name: 'GUSTAV', x: 150, color: '#ffcf8a', chats: [
+        ["Welcome to Jupiter! We have no ground. Just vibes.", "Then what am I standing on?! Don't answer."],
+        ["That red spot is a storm older than your grandma.", "Rude to my grandma. Accurate, though."],
+        ["Jupiter is so big, 1300 Earths could fit inside!", "And zero carrots. Tragic."],
+      ] },
+      { name: 'PUFF', x: 300, color: '#ff9ad5', pal: { A: C.purple }, chats: [
+        ["*floats* I'm a cloud with a face!", "Same. I'm a cloud with ATTITUDE."],
+        ["Jupiter has SO many moons. We lost count.", "Losing track of moons? Sloppy."],
+        ["Gravity here is super strong! Squish!", "My hops are tiny now. I feel betrayed."],
+      ] },
+      { name: 'STORMY', x: 430, color: '#c9a0ff', pal: { A: C.yellow }, chats: [
+        ["Zap! I love lightning. Lightning loves me.", "Keep that sparkle away from my fluff."],
+        ["I've been spinning in this storm for 300 years.", "Honestly? That sounds relaxing."],
+        ["Fly safe! Watch out for Saturn's show-off rings!", "Oh, I've met them. Very dramatic."],
+      ] },
+    ],
+  },
+
+  uranus: {
+    name: 'URANUS', short: 'URANUS', tagline: 'the sideways ice giant', hudColor: '#7fe8ff',
+    width: PLANET_W, shipX: 60, gravity: 1.4, seed: 707,
+    horizon: [1.8, 0.03, 0.8, 0.08],
+    sky: ['#02101a', '#06303a', '#0f5a66', '#3a9aa0'],
+    nebulae: [{ x: 70, y: 60, r: 60, col: '#7fe8ff' }],
+    farStars: 120, twinkles: 40, comets: true,
+    ground: { light: '#e0ffff', base: '#9fe8e8', dark: '#6cc4cc', shade: '#3a8a99' },
+    weather: { type: 'diamonds', count: 30, colors: [C.white, '#dffcff', '#7fe8ff'] },   // it rains diamonds!
+    icon: { base: '#9fe8e8', shade: '#3a8a99', ring: true, ringTilt: 1.4 },
+    snackLines: ["Tastes slightly of eggs. Ugh.", "Diamond-rain seasoning. Very fancy."],
+    species: 'gem',
+    arrival: "Sideways, freezing, and smells like eggs. Cute?",
+    idle: [
+      "Diamonds falling from the sky. Fancy.",
+      "Why is everything tilted? Pick a side!",
+      "Brr. Ice giant. Emphasis on ICE.",
+    ],
+    paintSky(g) {
+      const ringCols = ['rgba(223,252,255,0.75)', 'rgba(127,232,255,0.55)'];   // rings stand upright here
+      paintRing(g, 178, 70, 46, 7, 1.45, false, ringCols);
+      paintRing(g, 178, 70, 46, 7, 1.45, true, ringCols);
+      paintPlanet(g, 50, 30, 4, '#b8c0c8', null, '#6a7480');   // Miranda
+      paintSparkle(g, 128, 16, C.yellow, 'rgba(255,251,150,0.5)');   // the far, far sun
+    },
+    paintGround(g, rng) {
+      paintSpeckles(g, rng, this, 100, [C.white, '#3a8a99']);
+      paintCrystals(g, rng, this, 16, [C.white, '#7fe8ff']);
+      [200, 212, 370, 380].forEach((x, i) => paintSpire(g, this, x, 6 + (i % 2) * 6, '#7fe8ff', C.white));
+    },
+    npcs: [
+      { name: 'TILT', x: 150, color: '#7fe8ff', chats: [
+        ["Hi! Everything here spins sideways. Tilt your head!", "I'm not tilting. I'm iconic upright."],
+        ["Uranus got bumped long ago. Now it rolls around the sun.", "Relatable. I also roll out of bed."],
+        ["It rains diamonds here! Grab some!", "Diamonds? Cute. Carrots are better."],
+      ] },
+      { name: 'BIJOU', x: 300, color: '#ffb3f0', pal: { A: '#fff0fb' }, chats: [
+        ["I'm made of pure crystal. Very fancy.", "I'm made of pure fluff. Even fancier."],
+        ["Sorry, it smells like rotten eggs here!", "I noticed. I was being polite."],
+        ["Summer here lasts 21 years!", "Longest beach day ever. I need a hat."],
+      ] },
+      { name: 'SPINNY', x: 430, color: C.lime, pal: { A: '#efffd0' }, chats: [
+        ["Wheee! I spin all day! Wanna spin?", "I will spin. Once. Sassily."],
+        ["Brr! Coldest planet in the solar system!", "Colder than Neptune?! My whiskers!"],
+        ["Bye bye! Roll with it!", "I don't roll. I strut."],
+      ] },
+    ],
+  },
+
+  neptune: {
+    name: 'NEPTUNE', short: 'NEPTUNE', tagline: 'the frozen blue giant', hudColor: C.cyan,
+    width: PLANET_W, shipX: 60, gravity: 1.5, seed: 888,
+    horizon: [2, 0.025, 1, 0.07],
+    sky: ['#010616', '#041c40', '#083a70', '#0f5f9a'],
+    nebulae: [{ x: 180, y: 40, r: 70, col: C.cyan }],
+    farStars: 140, twinkles: 50, comets: true,
+    ground: { light: C.white, base: '#dff3ff', dark: '#a8d8f0', shade: '#6fa8d0' },
+    weather: { type: 'snow', count: 70, colors: [C.white, '#dff3ff'] },
+    icon: { base: '#3d8aff', band: '#6fb8ff', shade: '#1b3a8a' },
+    snackLines: ["Frozen snack. Brain freeze!", "It's a snack-sicle now."],
+    species: 'pengloo',
+    arrival: "COLD. Cold cold cold. Why did we come here?",
+    idle: [
+      "My whiskers are icicles now.",
+      "Snow bunny era: unlocked.",
+      "Blue sky, blue ground, blue mood.",
+    ],
+    paintSky(g) {
+      paintPlanet(g, 60, 34, 6, '#e8d8ff', null, '#9a8ac0');   // Triton
+      paintSparkle(g, 210, 22, C.yellow, 'rgba(255,251,150,0.5)');   // the sun, tiny from out here
+    },
+    paintGround(g, rng) {
+      paintSpeckles(g, rng, this, 90, [C.white, '#a8d8f0']);
+      paintIgloo(g, this, 118);
+      paintIgloo(g, this, 470);
+      paintSnowman(g, this, 245);
+      [360, 372, 380].forEach((x, i) => paintSpire(g, this, x, 6 + i * 3, '#7fe8ff', C.white));
+    },
+    drawSkyFx(g, w, t) { drawAurora(g, t); },
+    npcs: [
+      { name: 'FROSTY', x: 160, color: '#1b3a8a', tag: '#6fb8ff', chats: [
+        ["Brrr-illiant to meet you! Welcome to Neptune!", "Why is everything FROZEN?"],
+        ["We have the fastest winds in the solar system!", "My ears are flapping. This is not a look."],
+        ["Someone built a snowman with a carrot nose!", "A CARROT NOSE?! That's my lunch!"],
+      ] },
+      { name: 'SLUSH', x: 300, color: '#6a2a9a', tag: '#d9a6ff', chats: [
+        ["I like long waddles and cold hugs.", "Cold hugs are a crime."],
+        ["Neptune is blue because it's sad. Kidding!", "Don't scare me like that."],
+        ["Want to see me slide? Wheee!", "Ten out of ten. Cute form."],
+      ] },
+      { name: 'AURORA', x: 425, color: '#0a7a7a', tag: '#5cffe0', chats: [
+        ["The sky lights are dancing just for you!", "Finally, the respect I deserve."],
+        ["One year here lasts 165 Earth years.", "My birthday would never come?! Rude."],
+        ["Say hi to the Moon for me!", "I'll tell it you're cool. Literally."],
+      ] },
+    ],
+  },
+};
+
+// Title menu buttons (view coordinates)
+const MENU = [
+  { mode: 'play',    label: 'PLAY',    sub: 'fight aliens', x: 68,  y: 60, w: 56, h: 17, col: C.pink },
+  { mode: 'explore', label: 'EXPLORE', sub: 'roam & fly',   x: 132, y: 60, w: 56, h: 17, col: C.cyan },
+];
+
+// ---------------------------------------------------------------------
+// 5. BUNNY PERSONALITY
+// ---------------------------------------------------------------------
+const MOODS = {
+  sassy:  { label: 'SASSY',  color: C.hotPink, face: 'happy', earsUp: true },
+  moody:  { label: 'MOODY',  color: C.purple,  face: 'meh',   earsUp: false },
+  grumpy: { label: 'GRUMPY', color: C.orange,  face: 'hurt',  earsUp: false },
+  hangry: { label: 'HANGRY', color: C.red,     face: 'angry', earsUp: false },
+};
+
+const LINES = {
+  title: [
+    "Oh. It's you. Hi, I guess.",
+    "Fight aliens or just vibe. Your call.",
+    "Pick a mode. Choose wisely. Or cutely.",
+    "Cutest thing in this galaxy. Deal with it.",
+  ],
+  start: ["Ugh, fine. Let's save the moon. Again.", "Feed me, protect me, adore me. In that order."],
+  explore: ["Ooh, my Carrot Rocket! Let's go somewhere fabulous.", "A walk? On the moon? Fine. Or... we could FLY."],
+  idle: [
+    "I'm not moody. I'm lunar-powered.",
+    "Stare longer. I charge per second.",
+    "Space is huge. My patience? Tiny.",
+    "Zero gravity. Zero chill.",
+    "Do these ears make my head look big?",
+    "Is it snack o'clock? It's always snack o'clock.",
+  ],
+  full: ["I'm full. Rude of you to notice.", "One more bite and I'll float away."],
+  hungry: [
+    "Excuse me?? My tummy filed a complaint.",
+    "Hangry levels: critical. Feed. Me.",
+    "I will eat this moon. It's cheese, right?",
+  ],
+  starving: ["I'm literally fading. Dramatically.", "Tummy empty. Heart empty. Thanks."],
+  hit: [
+    "Rude!!",
+    "Hey! This fur is dry-clean only!",
+    "Ow! I'm telling the Queen of Mars.",
+    "Slime?! On MY ears?!",
+    "Watch the fluff!",
+  ],
+  lowHeart: ["I'm fine. Totally fine. *wobbles*", "One heart left. Make it count, bestie."],
+  kill: [
+    "Boom. Bye, sweetie.",
+    "Carrot'd. Cute, right?",
+    "That's what you get, green bean.",
+    "Don't mess with the fluff.",
+    "Pew pew. I mean... KABOOM.",
+  ],
+  combo: ["Double trouble! I'm a genius.", "Multi-kill! Put that on my poster.", "Two for one? I love a bargain."],
+  firework: ["Ooh, carrot fireworks! Pretty.", "Boom! That's art, darling."],
+  carrot: ["Ooh, ammo! Or lunch. Why not both?", "Carrots! My one true love.", "Delivery! Took you long enough."],
+  heart: ["Aww, a heart! For me? Obviously.", "Love you too, space mail."],
+  noAmmo: ["Out of carrots. Great. Just great.", "Carrots don't grow on moons, genius!"],
+  lastCarrot: ["That was my LAST carrot. Choose wisely."],
+  wave: ["Wave {wave}? I'd rather nap.", "More aliens. Wonderful. *eye roll*", "Here they come. Hold my carrot."],
+  waveClear: ["Too easy. Where's my trophy?", "Clean moon. Cute bunny. Perfect."],
+  launch: ["Carrot Rocket, GO! Buckle up, buttercup.", "Next stop: somewhere fabulous.", "Three, two, one... fluff-off!"],
+  flight: [
+    "Wheee! ...I mean, how dignified.",
+    "Space travel: 10/10. Snack service: 0/10.",
+    "Are we there yet? Are we there yet?",
+  ],
+  samePlace: ["We're already here, genius."],
+  allFriends: ["I met EVERYONE in the solar system. Iconic."],
+  gameover: [
+    "Hmph. Wake me when you're better at this.",
+    "The moon is doomed. My fur still looks great.",
+    "Game over?! I demand a re-bun.",
+  ],
+};
+
+// What the bunny says while eating: one pool per food, plus special moments.
+// Each planet also has its own `snackLines` that sometimes pop up instead.
+const EAT_LINES = {
+  carrot: [
+    "Carrot. My one true love.",
+    "Crunch! That's the sound of happiness.",
+    "Orange you glad I'm eating this? ...Sorry.",
+    "A carrot a day keeps the grumpy away. Mostly.",
+    "Crisp, sweet, perfect. Like me.",
+    "I'd write this carrot a poem. It rhymes with 'more'.",
+  ],
+  cheese: [
+    "Moon cheese! Tastes like home.",
+    "Cheesy. Just like your jokes.",
+    "Squeaky, stinky, delicious.",
+    "Wait. Am I eating my own house?",
+    "Cheese? For a bunny? Bold. I love it.",
+  ],
+  cookie: [
+    "A star cookie! I'm eating a constellation.",
+    "Sweet! Don't tell my dentist.",
+    "Crumbs in my fur. Worth it.",
+    "Cookie acquired. Mood: slightly less moody.",
+    "This cookie is out of this world. Literally.",
+  ],
+  handFed: [
+    "Hand-fed? Treat me like royalty. Good.",
+    "From your hand to my mouth. Perfect service.",
+    "Mmm. You may feed me again. Soon.",
+    "Five stars. Would get fed again.",
+    "Nom nom. I mean... hmph.",
+  ],
+  stash: [
+    "Eating my own ammo? Iconic.",
+    "Snacks over safety. Correct choice.",
+    "Grenade? No. Salad.",
+    "Ammo, snack... same thing, really.",
+  ],
+  hangry: [
+    "FINALLY. Was that so hard?",
+    "Food! Oh, sweet, sweet food!",
+    "I was THIS close to eating a rock.",
+    "My tummy says thanks. I say 'took you long enough'.",
+  ],
+  buffet: [
+    "Is this a buffet? I approve.",
+    "Keep 'em coming. I'm on a roll.",
+    "Snack streak! I'm unstoppable.",
+  ],
+  stuffed: [
+    "Stuffed. Roll me home.",
+    "Full tummy, happy bunny. Don't tell anyone.",
+    "I'm basically a fluffy balloon now.",
+  ],
+};
+const EAT_POPUPS = {
+  carrot:  { words: ['CRUNCH!', 'CRONCH!'], color: C.orange },
+  cheese:  { words: ['NOM!', 'SQUEAK!'],    color: C.yellow },
+  cookie:  { words: ['YUM!', 'SWEET!'],     color: C.gold },
+  handFed: { words: ['MUNCH!', 'NOM!'],     color: C.hotPink },
+  stash:   { words: ['CRUNCH!'],            color: C.orange },
+};
+
+const SNACKS = {
+  carrot: { sprite: 'carrot', apply() {
+    if (isExplore()) { feed(20, 'carrot'); return; }
+    game.ammo += CARROT_PICKUP;
+    popup(`+${CARROT_PICKUP} CARROTS`, C.orange);
+    say('carrot');
+    Sfx.pickup();
+  } },
+  cheese: { sprite: 'cheese', apply() { feed(20, 'cheese'); } },
+  cookie: { sprite: 'cookie', apply() { feed(30, 'cookie'); } },
+  heart:  { sprite: 'heart',  apply() {
+    game.hearts = Math.min(MAX_HEARTS, game.hearts + 1);
+    popup('+1 LIFE', C.hotPink);
+    say('heart');
+    Sfx.pickup();
+  } },
+};
+
+// ---------------------------------------------------------------------
+// 6. GLOBAL STATE
+// ---------------------------------------------------------------------
+let S = 4;          // screen pixels per game pixel
+let FS = 12;        // base UI font size (screen pixels)
+let view;           // low-res render target
+let bunny;
+let enemies = [], grenades = [], slimes = [], snacks = [], ships = [];
+let explosions = [], particles = [], popups = [];
+
+// state: 'title' | 'play' | 'paused' | 'over'   mode: 'play' | 'explore'
+// travel: null, or { phase: 'map' | 'launch' | 'flight' | 'landing', ... }
+const game = { state: 'title', mode: 'play', menuIndex: 0, camX: 0, travel: null,
+               npcsByWorld: {}, visited: new Set(), hiScore: loadHiScore() };
+const speech = { text: '', shown: 0, life: 0, cooldown: 0, last: '', speaker: null, queue: [], convo: null };
+
+// ---------------------------------------------------------------------
+// 7. SMALL HELPERS
+// ---------------------------------------------------------------------
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const pad = n => String(n).padStart(6, '0');
+const blink = (period = 30) => Math.floor(frameCount / (period / 2)) % 2 === 0;
+const isExplore = () => game.mode === 'explore';
+const worldWidth = () => (isExplore() ? World.theme.width : VIEW_W);
+const currentNpcs = () => game.npcsByWorld[World.id] || [];
+const allNpcs = () => Object.values(game.npcsByWorld).flat();
+const BAYER4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]].map(r => r.map(v => (v + 0.5) / 16));
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function mixRgb(a, b, t) { return a.map((v, i) => Math.round(v + (b[i] - v) * t)); }
+
+function mulberry32(seed) {   // deterministic RNG so scenery is the same every visit
+  return () => {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function boxesOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function pointInBox(px, py, b, padding = 0) {
+  return px >= b.x - padding && px <= b.x + b.w + padding && py >= b.y - padding && py <= b.y + b.h + padding;
+}
+
+// Velocity that lands a projectile on (tx, ty) after T frames of discrete gravity.
+function launch(x, y, tx, ty, grav, speedDiv, minT, maxT) {
+  const T = Math.round(clamp(dist(x, y, tx, ty) / speedDiv, minT, maxT));
+  return { T, vx: (tx - x) / T, vy: (ty - y - grav * T * (T + 1) / 2) / T };
+}
+
+function horizonAt(theme, x) {
+  const [a1, f1, a2, f2] = theme.horizon;
+  return Math.round(GROUND_Y - 5 + a1 * Math.sin(x * f1) + a2 * Math.sin(x * f2 + 1));
+}
+function horizonY(x) { return horizonAt(World.theme, x); }
+
+function loadHiScore() {
+  try { return Number(localStorage.getItem('moodyMoonBunnyHi')) || 0; } catch { return 0; }
+}
+function saveHiScore(v) {
+  try { localStorage.setItem('moodyMoonBunnyHi', v); } catch { /* storage unavailable */ }
+}
+
+// Mouse in view coordinates (screen) and world coordinates (scrolled).
+function mouseScreen() { return { x: mouseX / S, y: mouseY / S }; }
+function mouseWorld() { const m = mouseScreen(); return { x: m.x + game.camX, y: m.y }; }
+function mouseInView() { const m = mouseScreen(); return m.x >= 0 && m.y >= 0 && m.x <= VIEW_W && m.y <= VIEW_H; }
+function mouseOnBunny() { const m = mouseWorld(); return pointInBox(m.x, m.y, bunny.box, 3); }
+
+// ---------------------------------------------------------------------
+// 8. PIXEL DRAWING PRIMITIVES (all target a p5.Graphics `g`)
+// ---------------------------------------------------------------------
+function bakeSprite(rows, pal) {
+  const img = createGraphics(Math.max(...rows.map(r => r.length)), rows.length);
+  img.pixelDensity(1);
+  img.noStroke();
+  rows.forEach((row, y) => [...row].forEach((ch, x) => {
+    if (!pal[ch]) return;
+    img.fill(pal[ch]);
+    img.rect(x, y, 1, 1);
+  }));
+  return img;
+}
+
+function solidPalette(pal, col) {
+  return Object.fromEntries(Object.keys(pal).map(k => [k, col]));
+}
+
+function bakeSprites() {
+  for (const [name, { rows, pal }] of Object.entries(SPRITE_DATA)) SPR[name] = bakeSprite(rows, PAL[pal]);
+  SPR.ufo = bakeSprite(SPRITE_DATA.saucer.rows, PAL.ufo);
+  SPR.heartEmpty = bakeSprite(SPRITE_DATA.heart.rows, PAL.heartEmpty);
+  SPR.flyerFlash = bakeSprite(SPRITE_DATA.flyerA.rows, solidPalette(PAL.flyer, C.white));
+  SPR.crawlerFlash = bakeSprite(SPRITE_DATA.crawlerA.rows, solidPalette(PAL.crawler, C.white));
+  for (const [worldId, theme] of Object.entries(THEMES)) {
+    const species = SPECIES[theme.species];
+    for (const npc of theme.npcs) {
+      const pal = { ...species.pal, [species.bodyKey]: npc.color, ...(npc.pal || {}) };
+      SPR[npcSpriteKey(worldId, npc.name)] = species.frames.map(rows => bakeSprite(rows, pal));
+    }
+  }
+}
+function npcSpriteKey(worldId, name) { return `npc_${worldId}_${name}`; }
+
+function makeLayer(w) {
+  const g = createGraphics(w, VIEW_H);
+  g.pixelDensity(1);
+  g.noStroke();
+  return g;
+}
+
+function blit(g, img, x, y, flip = false) {
+  x = Math.round(x);
+  y = Math.round(y);
+  if (!flip) { g.image(img, x, y); return; }
+  g.push();
+  g.translate(x + img.width, y);
+  g.scale(-1, 1);
+  g.image(img, 0, 0);
+  g.pop();
+}
+
+function pixelEllipse(g, cx, cy, rx, ry, col) {
+  g.fill(col);
+  for (let dy = -ry; dy <= ry; dy++) {
+    const hw = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy * dy) / (ry * ry || 1))));
+    g.rect(Math.round(cx - hw), Math.round(cy + dy), hw * 2 + 1, 1);
+  }
+}
+function pixelDisc(g, cx, cy, r, col) { pixelEllipse(g, cx, cy, Math.round(r), Math.round(r), col); }
+
+function pixelRing(g, cx, cy, r, col) {
+  g.fill(col);
+  const steps = Math.max(8, Math.round(r * 6));
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * TWO_PI;
+    g.rect(Math.round(cx + Math.cos(a) * r), Math.round(cy + Math.sin(a) * r), 1, 1);
+  }
+}
+
+function paintSparkle(g, x, y, core, glow) {
+  g.fill(glow);
+  g.rect(x - 1, y, 1, 1); g.rect(x + 1, y, 1, 1); g.rect(x, y - 1, 1, 1); g.rect(x, y + 1, 1, 1);
+  g.fill(core);
+  g.rect(x, y, 1, 1);
+}
+
+function paintPlanet(g, cx, cy, r, base, band, shade) {
+  cx = Math.round(cx); cy = Math.round(cy); r = Math.round(r);
+  for (let dy = -r; dy <= r; dy++) {
+    const hw = Math.round(Math.sqrt(r * r - dy * dy));
+    g.fill(band && (dy + r) % 4 === 1 ? band : base);
+    g.rect(cx - hw, cy + dy, hw * 2 + 1, 1);
+    const sw = Math.ceil(hw * 0.6);
+    g.fill(shade);
+    g.rect(cx + hw - sw + 1, cy + dy, sw, 1);
+  }
+  g.fill('rgba(255,255,255,0.7)');
+  g.rect(cx - Math.round(r * 0.5), cy - Math.round(r * 0.5), Math.max(1, Math.round(r * 0.3)), 1);
+}
+
+// Ring drawn in two halves so the planet sits between them.
+function paintRing(g, cx, cy, rx, ry, tilt, front, cols) {
+  const steps = Math.round(rx * 8);
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * TWO_PI;
+    if ((Math.sin(a) > 0) !== front) continue;
+    cols.forEach((col, k) => {
+      const s = 1 - k * 0.1;
+      const px = Math.cos(a) * rx * s, py = Math.sin(a) * ry * s;
+      g.fill(col);
+      g.rect(Math.round(cx + px * Math.cos(tilt) - py * Math.sin(tilt)),
+             Math.round(cy + px * Math.sin(tilt) + py * Math.cos(tilt)), 1, 1);
+    });
+  }
+}
+
+function paintRingedPlanet(g, x, y, r, rx, ry, tilt = -0.25) {
+  const cols = [C.gold, '#ffe9a8', C.orange];
+  paintRing(g, x, y, rx, ry, tilt, false, cols);
+  paintPlanet(g, x, y, r, C.orange, C.gold, '#b3541e');
+  paintRing(g, x, y, rx, ry, tilt, true, cols);
+}
+
+// Small planet icon used on the star map and in the flight scene.
+function drawPlanetIcon(g, theme, x, y, r) {
+  const ic = theme.icon;
+  const tilt = ic.ringTilt === undefined ? -0.25 : ic.ringTilt;
+  const ringCols = [ic.band || C.gold, ic.band ? C.gold : C.white];
+  if (ic.ring) paintRing(g, x, y, r * 1.9, r * 0.5, tilt, false, ringCols);
+  paintPlanet(g, x, y, r, ic.base, ic.band || null, ic.shade);
+  if (ic.ring) paintRing(g, x, y, r * 1.9, r * 0.5, tilt, true, ringCols);
+}
+
+// ---------------------------------------------------------------------
+// 9. SOUND — tiny square-wave synth, no assets needed
+// ---------------------------------------------------------------------
+const Sfx = {
+  ctx: null,
+  muted: false,
+
+  unlock() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+    }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  ready() { return this.ctx && !this.muted; },
+
+  tone(freq, dur, { type = 'square', vol = 0.04, slide = 0, delay = 0 } = {}) {
+    if (!this.ready()) return;
+    const t0 = this.ctx.currentTime + delay;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t0 + dur);
+    gain.gain.setValueAtTime(vol, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  },
+  noise(dur, vol) {
+    if (!this.ready()) return;
+    const len = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = this.ctx.createBufferSource();
+    const gain = this.ctx.createGain();
+    src.buffer = buf;
+    gain.gain.value = vol;
+    src.connect(gain).connect(this.ctx.destination);
+    src.start();
+  },
+
+  toss()     { this.tone(520, 0.15, { slide: -280, vol: 0.03 }); },
+  boom()     { this.noise(0.35, 0.12); this.tone(140, 0.3, { type: 'triangle', slide: -90, vol: 0.08 }); },
+  pop()      { this.noise(0.15, 0.05); this.tone(900, 0.15, { type: 'triangle', slide: 600, vol: 0.04 }); },
+  eat()      { this.tone(660, 0.06); this.tone(880, 0.08, { delay: 0.07 }); },
+  pickup()   { [523, 659, 784].forEach((f, i) => this.tone(f, 0.07, { delay: i * 0.05, vol: 0.03 })); },
+  hurt()     { this.tone(300, 0.3, { type: 'sawtooth', slide: -200, vol: 0.05 }); },
+  jump()     { this.tone(300, 0.12, { slide: 300, vol: 0.025 }); },
+  slime()    { this.tone(180, 0.12, { type: 'triangle', slide: 120, vol: 0.03 }); },
+  blip(alien) {
+    if (alien) this.tone(500 + Math.random() * 500, 0.04, { type: 'triangle', slide: 200, vol: 0.03 });
+    else this.tone(1200 + Math.random() * 300, 0.025, { vol: 0.012 });
+  },
+  select()   { this.tone(740, 0.05, { vol: 0.03 }); },
+  empty()    { this.tone(110, 0.1, { vol: 0.03 }); },
+  launch()   { this.noise(1.2, 0.07); this.tone(70, 1.2, { type: 'triangle', slide: 400, vol: 0.08 }); },
+  land()     { this.noise(0.5, 0.05); this.tone(400, 0.5, { type: 'triangle', slide: -330, vol: 0.06 }); },
+  thunder()  { this.noise(0.8, 0.05); this.tone(60, 0.8, { type: 'triangle', slide: -20, vol: 0.05 }); },
+  wave()     { [392, 523, 659, 784].forEach((f, i) => this.tone(f, 0.1, { delay: i * 0.09, vol: 0.035 })); },
+  gameOver() { [392, 330, 262, 196].forEach((f, i) => this.tone(f, 0.18, { delay: i * 0.16, type: 'triangle', vol: 0.06 })); },
+};
+
+// ---------------------------------------------------------------------
+// 10. SCENERY PAINTERS (baked once per world)
+// ---------------------------------------------------------------------
+function paintSpace(g, theme) {
+  const bands = theme.sky.map(hexToRgb);
+  const nebulae = theme.nebulae.map(n => ({ ...n, rgb: hexToRgb(n.col) }));
+  g.loadPixels();
+  for (let y = 0; y < VIEW_H; y++) {
+    for (let x = 0; x < VIEW_W; x++) {
+      const th = BAYER4[y & 3][x & 3];
+      const t = clamp(y / GROUND_Y, 0, 1) * (bands.length - 1);
+      const i = Math.min(Math.floor(t), bands.length - 2);
+      let rgb = t - i > th ? bands[i + 1] : bands[i];      // ordered-dither gradient
+      for (const n of nebulae) {
+        const d = Math.hypot(x - n.x, (y - n.y) * 1.6) / n.r;
+        if (d >= 1) continue;
+        const k = (1 - d) * (0.35 + noise(x * 0.06, y * 0.06) * 0.9);
+        if (k > th) rgb = mixRgb(rgb, n.rgb, k > th + 0.35 ? 0.55 : 0.3);
+      }
+      const idx = 4 * (y * VIEW_W + x);
+      g.pixels[idx] = rgb[0];
+      g.pixels[idx + 1] = rgb[1];
+      g.pixels[idx + 2] = rgb[2];
+      g.pixels[idx + 3] = 255;
+    }
+  }
+  g.updatePixels();
+}
+
+function paintFarStars(g, rng, count) {
+  const cols = ['rgba(255,255,255,0.9)', 'rgba(201,191,255,0.7)', 'rgba(125,249,255,0.6)', 'rgba(255,110,199,0.6)'];
+  for (let i = 0; i < count; i++) {
+    g.fill(cols[Math.floor(rng() * cols.length)]);
+    g.rect(Math.floor(rng() * VIEW_W), Math.floor(rng() * (GROUND_Y - 8)), 1, 1);
+  }
+}
+
+function paintGalaxy(g, gx, rng) {
+  const inner = color(gx.inner);
+  const outer = color(gx.outer);
+  const n = gx.size * 18;
+  for (let arm = 0; arm < 2; arm++) {
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      const ang = arm * PI + t * 5 + (rng() - 0.5) * 0.5;
+      const r = t * gx.size + (rng() - 0.5) * 1.5;
+      const x = Math.cos(ang) * r;
+      const y = Math.sin(ang) * r * 0.42;
+      const c = lerpColor(inner, outer, t);
+      c.setAlpha(255 * (1 - t * 0.6));
+      g.fill(c);
+      g.rect(Math.round(gx.x + x * Math.cos(gx.tilt) - y * Math.sin(gx.tilt)),
+             Math.round(gx.y + x * Math.sin(gx.tilt) + y * Math.cos(gx.tilt)), 1, 1);
+    }
+  }
+  pixelEllipse(g, gx.x, gx.y, 2, 1, 'rgba(255,255,255,0.5)');
+  g.fill(C.white);
+  g.rect(gx.x, gx.y, 1, 1);
+}
+
+function paintOrbits(g) {
+  g.fill('rgba(185,103,255,0.45)');
+  for (const p of SOLAR.planets) {
+    const steps = p.rx * 4;
+    for (let i = 0; i < steps; i += 2) {
+      const a = (i / steps) * TWO_PI;
+      g.rect(Math.round(SOLAR.x + Math.cos(a) * p.rx), Math.round(SOLAR.y + Math.sin(a) * p.ry), 1, 1);
+    }
+  }
+}
+
+function paintEarth(g, x, y) {
+  paintPlanet(g, x, y, 5, C.blue, null, '#1b2a8a');
+  g.fill(C.green);
+  [[-3, -1, 2, 2], [0, -3, 2, 1], [-1, 2, 3, 1], [1, 0, 1, 2]].forEach(([dx, dy, w, h]) => g.rect(x + dx, y + dy, w, h));
+  g.fill(C.moonLight);
+  g.rect(x + 9, y - 5, 1, 1);   // Earth's own little moon
+}
+
+function paintGround(g, theme) {
+  const { light, base, dark, mid } = theme.ground;
+  for (let x = 0; x < g.width; x++) {
+    const hy = horizonAt(theme, x);
+    for (let y = hy; y < VIEW_H; y++) {
+      const t = (y - hy) / (VIEW_H - hy);
+      let col = t * 1.3 > BAYER4[y & 3][x & 3] ? dark : base;
+      if (theme.stripes && ((y - hy) >> 2) % 2 === 1 && col === base) col = mid;   // ring bands
+      g.fill(y === hy ? light : col);
+      g.rect(x, y, 1, 1);
+    }
+  }
+}
+
+function paintCraters(g, theme, craters) {
+  for (const [cx, cy, rx, ry] of craters) {
+    pixelEllipse(g, cx, cy + 1, rx, ry, theme.ground.light);
+    pixelEllipse(g, cx, cy, rx, ry, theme.ground.shade);
+  }
+}
+
+function paintSpeckles(g, rng, theme, count, cols) {
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(rng() * g.width);
+    g.fill(cols[Math.floor(rng() * cols.length)]);
+    g.rect(x, horizonAt(theme, x) + 2 + Math.floor(rng() * 20), 1, 1);
+  }
+}
+
+function paintCrystals(g, rng, theme, count, cols) {
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(rng() * g.width);
+    const y = horizonAt(theme, x) + 4 + Math.floor(rng() * 14);
+    g.fill(cols[i % cols.length]);
+    g.rect(x, y, 1, 2);
+    g.rect(x + 1, y + 1, 1, 1);
+  }
+}
+
+function paintRocks(g, rng, theme, count, col, highlight) {
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(rng() * g.width);
+    const y = horizonAt(theme, x) + 3 + Math.floor(rng() * 14);
+    const rx = 1 + Math.floor(rng() * 3);
+    pixelEllipse(g, x, y, rx, 1, col);
+    g.fill(highlight);
+    g.rect(x - rx + 1, y - 1, rx, 1);
+  }
+}
+
+// Places a sprite standing on the horizon; returns its top-left.
+function paintProp(g, theme, img, x) {
+  const pos = { x: x - Math.floor(img.width / 2), y: horizonAt(theme, x) + 1 - img.height };
+  blit(g, img, pos.x, pos.y);
+  return pos;
+}
+
+function paintHabitat(g, theme, h) {
+  const base = horizonAt(theme, h.x) + 1;
+  const bw = Math.round(h.r * 1.2), bh = Math.round(h.r * 0.5);
+  const bx = h.x - Math.floor(bw / 2), by = base - bh;
+  g.fill('#2a1850');
+  g.rect(bx, by, bw, bh);
+  g.fill(C.moonShade);
+  g.rect(bx, by, bw, 1);
+  g.fill(C.moonLight);
+  g.rect(h.x, base - h.r - 3, 1, 3);   // antenna
+  for (let dy = -h.r; dy <= 0; dy++) {
+    const hw = Math.round(Math.sqrt(h.r * h.r - dy * dy));
+    g.fill('rgba(5,217,232,0.16)');
+    g.rect(h.x - hw, base + dy, hw * 2 + 1, 1);
+  }
+  g.fill('rgba(125,249,255,0.85)');
+  for (let a = 0; a <= PI; a += 0.03) g.rect(Math.round(h.x + Math.cos(a) * h.r), Math.round(base - Math.sin(a) * h.r), 1, 1);
+  g.fill('rgba(255,255,255,0.7)');
+  g.rect(h.x - Math.round(h.r * 0.5), base - Math.round(h.r * 0.7), 1, 2);
+
+  const windows = [];
+  for (let wx = bx + 1; wx + 2 <= bx + bw - 1; wx += 3) windows.push({ x: wx, y: by + 2 });
+  return { windows, beacon: { x: h.x, y: base - h.r - 4 } };
+}
+
+function randomCraters(rng, theme, width, count) {
+  return Array.from({ length: count }, () => {
+    const x = Math.floor(rng() * width);
+    return [x, horizonAt(theme, x) + 5 + Math.floor(rng() * 14), 2 + Math.floor(rng() * 6), 1 + Math.floor(rng() * 2)];
+  });
+}
+
+function paintCloud(g, x, y, w) {   // fluffy daytime cloud
+  const puffs = [[-w * 0.5, 1, w * 0.35], [0, -1, w * 0.45], [w * 0.5, 1, w * 0.3]];
+  puffs.forEach(([dx, dy, r]) => pixelEllipse(g, x + dx, y + dy + 1, Math.round(r), Math.round(r * 0.5), '#cfe6ff'));
+  puffs.forEach(([dx, dy, r]) => pixelEllipse(g, x + dx, y + dy, Math.round(r), Math.round(r * 0.5), C.white));
+}
+
+function paintCloudTower(g, theme, x, h) {   // Jupiter's towering storm clouds
+  const base = horizonAt(theme, x) + 2;
+  for (let i = 0; i < 3; i++) {
+    const r = 9 - i * 2;
+    pixelDisc(g, x + (i % 2 ? 4 : -3), base - i * (h / 3), r, i % 2 ? '#e8c090' : '#f5dcb4');
+  }
+}
+
+function paintHills(g, theme, col, rim) {   // rolling green hills behind the horizon
+  for (let x = 0; x < g.width; x++) {
+    const top = horizonAt(theme, x) - 6 - Math.round(5 * Math.sin(x * 0.018) + 3 * Math.sin(x * 0.05 + 2));
+    g.fill(rim);
+    g.rect(x, top, 1, 1);
+    g.fill(col);
+    g.rect(x, top + 1, 1, horizonAt(theme, x) - top + 1);
+  }
+}
+
+function paintFlowers(g, rng, theme, count) {
+  const petals = [C.hotPink, C.yellow, C.white, C.purple];
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(rng() * g.width);
+    const y = horizonAt(theme, x) + 3 + Math.floor(rng() * 14);
+    g.fill('#1f8a2e'); g.rect(x, y + 1, 1, 1);
+    g.fill(petals[i % petals.length]); g.rect(x, y, 1, 1);
+  }
+}
+
+function paintTree(g, theme, x) {
+  const base = horizonAt(theme, x) + 1;
+  g.fill('#6a3e1a');
+  g.rect(x - 1, base - 7, 2, 7);
+  pixelDisc(g, x, base - 11, 6, '#2fae3f');
+  pixelDisc(g, x - 2, base - 13, 3, '#7de06a');
+  g.fill(C.red);   // apples!
+  g.rect(x + 2, base - 10, 1, 1); g.rect(x - 3, base - 8, 1, 1); g.rect(x + 1, base - 14, 1, 1);
+}
+
+function paintBarn(g, theme, x) {
+  const base = horizonAt(theme, x) + 1;
+  const w = 16, h = 10;
+  for (let i = 0; i < 6; i++) {   // roof
+    g.fill(i === 0 ? '#ffb3a8' : '#8a1f1f');
+    g.rect(x - w / 2 - 1 + i, base - h - 6 + i, w + 2 - i * 2, 1);
+  }
+  g.fill('#d9342b');
+  g.rect(x - w / 2, base - h, w, h);
+  g.fill(C.white);   // barn door with the classic X
+  g.rect(x - 3, base - 7, 6, 7);
+  g.fill('#d9342b');
+  for (let i = 0; i < 5; i++) { g.rect(x - 2 + i, base - 6 + i, 1, 1); g.rect(x + 2 - i, base - 6 + i, 1, 1); }
+}
+
+function paintCarrotGarden(g, theme, from, to, soil = C.moonShade) {
+  for (let x = from; x <= to; x += 6) {
+    const y = horizonAt(theme, x) + 3;
+    g.fill(soil); g.rect(x - 1, y + 2, 4, 1);
+    g.fill(C.orange);    g.rect(x, y + 1, 2, 1);
+    g.fill(C.green);     g.rect(x - 1, y - 1, 1, 2); g.rect(x + 2, y - 1, 1, 2); g.rect(x, y, 2, 1);
+  }
+}
+
+function paintMesa(g, theme, m) {   // flat-topped Martian rock towers behind the horizon
+  const base = horizonAt(theme, m.x) + 2;
+  for (let dy = 0; dy <= m.h; dy++) {
+    const w = m.w + Math.floor(dy / 3) * 2;
+    g.fill(dy === 0 ? '#b8452e' : dy % 4 === 0 ? '#6a2018' : '#7a2a22');
+    g.rect(m.x - Math.floor(w / 2), base - m.h + dy, w, 1);
+  }
+}
+
+function paintVolcano(g, theme, v) {   // returns the crater position for lava effects
+  const base = horizonAt(theme, v.x) + 2;
+  const top = base - v.h;
+  for (let dy = 0; dy <= v.h; dy++) {
+    const hw = Math.max(1, Math.round((v.w / 2) * (dy / v.h)));
+    g.fill('#4a1535');
+    g.rect(v.x - hw, top + dy, hw * 2 + 1, 1);
+    g.fill('#6b2048');
+    g.rect(v.x - hw, top + dy, Math.max(1, Math.round(hw * 0.4)), 1);
+  }
+  g.fill(C.orange);   // lava trickles
+  for (let dy = 1; dy < v.h * 0.6; dy += 1) g.rect(v.x + Math.round(Math.sin(dy * 0.7) * 1.5), top + dy, 1, 1);
+  return { x: v.x, y: top };
+}
+
+function paintLavaCracks(g, rng, theme, count) {
+  for (let i = 0; i < count; i++) {
+    let x = Math.floor(rng() * g.width);
+    let y = horizonAt(theme, x) + 4 + Math.floor(rng() * 14);
+    const len = 4 + Math.floor(rng() * 7);
+    for (let k = 0; k < len; k++) {
+      g.fill(k % 3 === 0 ? C.yellow : '#ff6a2a');
+      g.rect(x, y, 1, 1);
+      x += 1;
+      y += Math.floor(rng() * 3) - 1;
+    }
+  }
+}
+
+function paintSpire(g, theme, x, h, col, highlight) {   // crystal spike
+  const base = horizonAt(theme, x) + 1;
+  for (let dy = 0; dy < h; dy++) {
+    const w = 1 + Math.floor((dy / h) * 3);
+    g.fill(col);
+    g.rect(x - Math.floor(w / 2), base - h + dy, w, 1);
+    g.fill(highlight);
+    g.rect(x - Math.floor(w / 2), base - h + dy, 1, 1);
+  }
+}
+
+function paintIgloo(g, theme, x) {
+  const base = horizonAt(theme, x) + 1;
+  const r = 9;
+  for (let dy = -r; dy <= 0; dy++) {
+    const hw = Math.round(Math.sqrt(r * r - dy * dy));
+    g.fill(dy % 3 === 0 ? '#a8d8f0' : C.white);   // ice-block seams
+    g.rect(x - hw, base + dy, hw * 2 + 1, 1);
+  }
+  g.fill('#a8d8f0');
+  for (let dy = -r + 1; dy < 0; dy += 3) g.rect(x + ((dy / 3) % 2 ? 3 : -2), base + dy, 1, 2);
+  pixelEllipse(g, x, base, 3, 4, '#0b2a4a');   // doorway
+}
+
+function paintSnowman(g, theme, x) {
+  const base = horizonAt(theme, x) + 1;
+  pixelDisc(g, x, base - 4, 4, C.white);
+  pixelDisc(g, x, base - 11, 3, C.white);
+  pixelDisc(g, x, base - 16, 2, C.white);
+  g.fill(C.ink);
+  g.rect(x - 1, base - 17, 1, 1); g.rect(x + 1, base - 17, 1, 1);
+  g.rect(x, base - 12, 1, 1); g.rect(x, base - 9, 1, 1);
+  g.fill(C.orange);   // a carrot nose. The bunny is NOT okay with this.
+  g.rect(x + 1, base - 16, 2, 1);
+  g.fill('#8a4b2a');
+  g.rect(x - 6, base - 13, 3, 1); g.rect(x + 4, base - 13, 3, 1);
+}
+
+// ---------------------------------------------------------------------
+// 11. WORLD — builds, caches and draws the current planet
+// ---------------------------------------------------------------------
+function buildWorld(id) {
+  const theme = THEMES[id];
+  const rng = mulberry32(theme.seed);
+  noiseSeed(theme.seed);
+
+  const sky = makeLayer(VIEW_W);
+  paintSpace(sky, theme);
+  paintFarStars(sky, rng, theme.farStars);
+  if (theme.paintSky) theme.paintSky(sky, rng);
+
+  const ground = makeLayer(theme.width);
+  const backdrop = (theme.paintBackdrop && theme.paintBackdrop(ground, rng)) || {};
+  paintGround(ground, theme);
+  const props = { ...backdrop, ...((theme.paintGround && theme.paintGround(ground, rng)) || {}) };
+
+  const stars = Array.from({ length: theme.twinkles }, () => ({
+    x: Math.floor(rng() * VIEW_W), y: Math.floor(rng() * (GROUND_Y - 14)),
+    phase: rng() * TWO_PI, speed: 0.02 + rng() * 0.05, col: NEON[Math.floor(rng() * NEON.length)],
+  }));
+  return { id, theme, sky, ground, stars, props, fx: theme.initFx ? theme.initFx() : {} };
+}
+
+const World = {
+  cache: {},
+  id: 'moon',
+  data: null,
+  t: 0,
+  comets: [],
+  traffic: [],
+  weather: [],
+  cometT: 90,
+  trafficT: 400,
+
+  get theme() { return THEMES[this.id]; },
+  get(id) { return this.cache[id] || (this.cache[id] = buildWorld(id)); },
+
+  enter(id) {
+    this.id = id;
+    this.data = this.get(id);
+    this.comets = [];
+    this.traffic = this.theme.traffic ? [{ type: 'ufo', dir: 1, speed: 0.35, x: 70, y: 70, t: 0 }] : [];
+    const w = this.theme.weather;
+    this.weather = w ? Array.from({ length: w.count }, (_, i) => ({
+      x: random(VIEW_W), y: random(VIEW_H), s: random(0.4, 1), p: random(TWO_PI), col: w.colors[i % w.colors.length],
+    })) : [];
+  },
+
+  update(dCam) {
+    this.t++;
+    const theme = this.theme;
+    if (theme.comets && --this.cometT <= 0) {
+      this.comets.push({ x: random(60, VIEW_W + 40), y: random(-10, 30), vx: random(-2.2, -1.4), vy: random(0.5, 0.9) });
+      this.cometT = random(180, 420);
+    }
+    if (theme.traffic && --this.trafficT <= 0) {
+      this.spawnTraffic();
+      this.trafficT = random(300, 560);
+    }
+    this.comets.forEach(c => { c.x += c.vx; c.y += c.vy; });
+    this.comets = this.comets.filter(c => c.x > -30 && c.y < GROUND_Y - 10);
+    this.traffic.forEach(v => { v.t++; v.x += v.dir * v.speed; });
+    this.traffic = this.traffic.filter(v => v.x > -30 && v.x < VIEW_W + 30);
+    this.updateWeather(dCam);
+    if (theme.updateFx) theme.updateFx(this.data, this.t);
+  },
+
+  updateWeather(dCam) {
+    const w = this.theme.weather;
+    if (!w) return;
+    for (const p of this.weather) {
+      p.x -= dCam * (0.4 + 0.6 * p.s);   // parallax with the camera
+      if (w.type === 'dust')   { p.x += 0.6 + 1.4 * p.s; p.y += Math.sin(this.t * 0.05 + p.p) * 0.25; }
+      if (w.type === 'embers') { p.y -= 0.15 + 0.35 * p.s; p.x += Math.sin(this.t * 0.04 + p.p) * 0.2; }
+      if (w.type === 'snow')   { p.y += 0.2 + 0.4 * p.s; p.x += Math.sin(this.t * 0.03 + p.p) * 0.3 - 0.15; }
+      if (w.type === 'sparkle') p.y += 0.05 * p.s;
+      if (w.type === 'petals')   { p.y += 0.15 + 0.2 * p.s; p.x += Math.sin(this.t * 0.02 + p.p) * 0.5 + 0.2; }
+      if (w.type === 'diamonds') p.y += 0.4 + 0.5 * p.s;
+      p.x = ((p.x % VIEW_W) + VIEW_W) % VIEW_W;
+      if (p.y > VIEW_H) p.y -= VIEW_H + 2;
+      if (p.y < -2) p.y += VIEW_H + 2;
+    }
+  },
+
+  spawnTraffic() {
+    const type = random(['rocket', 'rocket', 'ufo', 'satellite']);
+    const dir = random([-1, 1]);
+    const speed = { rocket: 0.9, ufo: 0.35, satellite: 0.18 }[type];
+    this.traffic.push({ type, dir, speed, x: dir > 0 ? -20 : VIEW_W + 20, y: random(44, 96), t: 0 });
+  },
+
+  // Far-away sky: view coordinates, never scrolls.
+  drawSky(g) {
+    const theme = this.theme;
+    g.image(this.data.sky, 0, 0);
+    for (const s of this.data.stars) {
+      const v = Math.sin(this.t * s.speed + s.phase);
+      if (v < -0.3) continue;
+      if (v > 0.9) paintSparkle(g, s.x, s.y, s.col, s.col);
+      else { g.fill(s.col); g.rect(s.x, s.y, 1, 1); }
+    }
+    if (theme.drawSkyFx) theme.drawSkyFx(g, this.data, this.t);
+    this.comets.forEach(c => drawComet(g, c));
+    this.traffic.forEach(v => drawVehicle(g, v));
+  },
+
+  // Ground, props, aliens and the rocket: world coordinates (caller applies the camera).
+  drawGround(g) {
+    const theme = this.theme;
+    g.image(this.data.ground, 0, 0);
+    if (theme.drawGroundFx) theme.drawGroundFx(g, this.data, this.t);
+    if (isExplore()) drawCarrotShip(g);
+    currentNpcs().forEach(npc => npc.draw(g, this.t));
+  },
+
+  drawWeather(g) {
+    const w = this.theme.weather;
+    if (!w) return;
+    for (const p of this.weather) {
+      const x = Math.round(p.x), y = Math.round(p.y);
+      if (w.type === 'sparkle' || w.type === 'diamonds') {
+        const v = Math.sin(this.t * 0.1 + p.p * 5);
+        if (v < 0.3) continue;
+        if (v > 0.92) { paintSparkle(g, x, y, p.col, p.col); continue; }
+      }
+      g.fill(p.col);
+      g.rect(x, y, w.type === 'dust' && p.s > 0.7 ? 2 : p.s > 0.85 ? 2 : 1, w.type === 'snow' && p.s > 0.85 ? 2 : 1);
+    }
+  },
+};
+
+// --- animated sky pieces ----------------------------------------------
+function drawSolarSystem(g, t) {
+  const { x, y, planets } = SOLAR;
+  const bodies = planets.map((p, i) => {
+    const a = t * p.speed + i * 1.7;
+    return { p, px: x + Math.cos(a) * p.rx, py: y + Math.sin(a) * p.ry, front: Math.sin(a) > 0 };
+  });
+  const drawBody = b => pixelDisc(g, b.px, b.py, b.p.r, b.p.col);
+  bodies.filter(b => !b.front).forEach(drawBody);
+  pixelDisc(g, x, y, Math.sin(t * 0.08) > 0 ? 7 : 6, 'rgba(255,159,28,0.35)');
+  pixelDisc(g, x, y, 4, C.gold);
+  pixelDisc(g, x - 1, y - 1, 2, C.yellow);
+  bodies.filter(b => b.front).forEach(drawBody);
+}
+
+function drawAurora(g, t) {   // Neptune's dancing sky ribbons
+  const ribbons = [[C.green, 0.22], [C.cyan, 0.2], [C.purple, 0.18]];
+  ribbons.forEach(([col, alpha], r) => {
+    const c = color(col);
+    c.setAlpha(255 * alpha);
+    g.fill(c);
+    for (let x = 0; x < VIEW_W; x++) {
+      const y = 18 + r * 11 + Math.sin(x * 0.03 + t * 0.02 + r) * 6 + Math.sin(x * 0.07 - t * 0.015) * 3;
+      g.rect(x, Math.round(y), 1, 5 + Math.round(Math.sin(x * 0.1 + t * 0.03) * 2));
+    }
+  });
+}
+
+function drawComet(g, c) {
+  for (let k = 10; k >= 0; k--) {
+    const px = Math.round(c.x - c.vx * k * 0.8), py = Math.round(c.y - c.vy * k * 0.8);
+    if (py >= GROUND_Y - 12) continue;
+    g.fill(k < 2 ? C.white : k < 5 ? C.cyan : 'rgba(185,103,255,0.6)');
+    g.rect(px, py, 1, 1);
+  }
+}
+
+function drawVehicle(g, v) {
+  const flip = v.dir < 0;
+  if (v.type === 'rocket') {
+    blit(g, SPR.rocket, v.x - 5, v.y - 2, flip);
+    const tailX = flip ? v.x + 6 : v.x - 6;
+    for (let i = 0; i < 4; i++) {
+      if (random() < 0.2) continue;
+      g.fill(i < 1 ? C.yellow : i < 3 ? C.orange : C.pink);
+      g.rect(Math.round(tailX - v.dir * i), Math.round(v.y) + (i > 1 ? Math.floor(random(-1, 2)) : 0), 1, 1);
+    }
+  } else if (v.type === 'ufo') {
+    const y = Math.round(v.y + Math.sin(v.t * 0.05) * 2);
+    for (let i = 0; i < 16; i++) {   // tractor beam
+      const hw = 2 + Math.floor(i / 3);
+      g.fill(`rgba(185,255,92,${(0.3 - i * 0.012).toFixed(3)})`);
+      g.rect(Math.round(v.x) - hw, y + 4 + i, hw * 2 + 1, 1);
+    }
+    blit(g, SPR.cow, v.x - 4, y + 10 + Math.round(Math.sin(v.t * 0.1) * 2), flip);
+    blit(g, SPR.ufo, v.x - 7, y - 3);
+  } else {
+    blit(g, SPR.satellite, v.x - 4, v.y - 1);
+    if (Math.floor(v.t / 20) % 2) { g.fill(C.red); g.rect(Math.round(v.x), Math.round(v.y) - 2, 1, 1); }
+  }
+}
+
+function drawCarrotFlag(g, theme, x, t) {
+  const fy = horizonAt(theme, x);
+  g.fill(C.moonLight);
+  g.rect(x, fy - 14, 1, 14);
+  for (let i = 0; i < 7; i++) {
+    const wave = Math.round(Math.sin(t * 0.1 + i * 0.8) * 0.8);
+    g.fill(i < 2 ? C.green : C.orange);
+    g.rect(x + 1 + i, fy - 14 + wave + (i < 2 ? 1 : 0), 1, i < 2 ? 2 : 4);
+  }
+}
+
+// --- the Carrot Rocket --------------------------------------------------
+function shipLift() { return game.travel ? game.travel.lift || 0 : 0; }
+function shipTop() { return horizonY(World.theme.shipX) + 1 - SPR.carrotShip.height - shipLift(); }
+function shipBox() { return { x: World.theme.shipX - 5, y: shipTop(), w: 11, h: SPR.carrotShip.height }; }
+
+function drawCarrotShip(g) {
+  const x = World.theme.shipX;
+  const top = Math.round(shipTop());
+  blit(g, SPR.carrotShip, x - 5, top);
+  const firing = game.travel && (game.travel.phase === 'launch' || game.travel.phase === 'landing');
+  if (firing) {
+    const bottom = top + SPR.carrotShip.height;
+    for (let i = 0; i < 6; i++) {
+      g.fill(i < 2 ? C.yellow : i < 4 ? C.orange : C.pink);
+      g.rect(x - 1 + Math.floor(random(3)), bottom + i, 1, 1);
+    }
+  } else if (Math.floor(World.t / 30) % 2) {   // idle "ready" light
+    g.fill(C.lime);
+    g.rect(x, top + 2, 1, 1);
+  }
+}
+
+// ---------------------------------------------------------------------
+// 12. ENTITIES
+// ---------------------------------------------------------------------
+class Bunny {
+  constructor(x = VIEW_W / 2) {
+    this.x = x;
+    this.y = GROUND_Y;
+    this.vy = 0;
+    this.face = 1;
+    this.onGround = true;
+    this.walkT = 0;
+    this.invulnT = 0;
+    this.chewT = 0;
+    this.blinkT = 120;
+  }
+
+  get box() { return { x: this.x - 5, y: this.y - 14, w: 10, h: 14 }; }
+
+  update(ctrl) {
+    const speed = game.hunger < 25 ? 0.9 : 1.3;   // hangry bunnies drag their paws
+    if (ctrl.left) { this.x -= speed; this.face = -1; }
+    if (ctrl.right) { this.x += speed; this.face = 1; }
+    this.x = clamp(this.x, 8, worldWidth() - 8);
+    this.walkT = ctrl.left !== ctrl.right ? this.walkT + 1 : 0;
+    if (this.onGround && this.walkT % 14 === 7) {
+      particles.push(new Particle(this.x - this.face * 4, this.y - 1, -this.face * 0.2, -0.2, 18, World.theme.ground.light));
+    }
+
+    this.vy += GRAVITY * (isExplore() ? World.theme.gravity : 1);   // heavier planets, smaller hops
+    this.y += this.vy;
+    if (this.y >= GROUND_Y) {
+      if (!this.onGround) burst(this.x, GROUND_Y - 1, 5, [World.theme.ground.light, World.theme.ground.base], 0.6);
+      this.y = GROUND_Y;
+      this.vy = 0;
+      this.onGround = true;
+    }
+
+    if (this.invulnT > 0) this.invulnT--;
+    if (this.chewT > 0) this.chewT--;
+    if (--this.blinkT < 0) this.blinkT = random(120, 260);
+  }
+
+  jump() {
+    if (!this.onGround) return;
+    this.vy = -2.6;
+    this.onGround = false;
+    Sfx.jump();
+  }
+
+  hurt(reason = 'hit', force = false) {
+    if (game.state !== 'play' || isExplore() || (this.invulnT > 0 && !force)) return;
+    game.hearts--;
+    this.invulnT = INVULN_FRAMES;
+    game.shake = 5;
+    Sfx.hurt();
+    burst(this.x, this.y - 8, 10, [C.hotPink, C.white], 1.2);
+    if (game.hearts <= 0) { gameOver(); return; }
+    say(game.hearts === 1 ? 'lowHeart' : reason, true);
+  }
+
+  draw(g, mood) {
+    if (this.invulnT > 0 && Math.floor(this.invulnT / 4) % 2 === 0) return;
+    const bob = this.onGround && Math.floor(this.walkT / 6) % 2 ? -1 : 0;
+    const sx = Math.round(this.x - 6);
+    const sy = Math.round(this.y - 16 + bob);
+    blit(g, mood.earsUp ? SPR.bunnyUp : SPR.bunnyFlop, sx, sy, this.face < 0);
+
+    g.fill(PAL.bunny.W);   // pom-pom tail
+    g.rect(this.face > 0 ? sx - 1 : sx + 13, sy + 12, 1, 2);
+
+    this.drawFace(g, sx, sy, mood.face);
+    this.drawMoodMark(g, sx, sy, mood);
+  }
+
+  drawFace(g, sx, sy, face) {
+    const px = (x, y, col) => { g.fill(col); g.rect(sx + x, sy + y, 1, 1); };
+    const { K, P } = PAL.bunny;
+    const blinking = this.blinkT < 6;
+
+    if (face === 'happy') {
+      [[3, 8], [4, 7], [5, 8], [7, 8], [8, 7], [9, 8]].forEach(([x, y]) => px(x, y, K));
+    } else if (face === 'hurt') {
+      [[3, 7], [4, 8], [3, 9], [9, 7], [8, 8], [9, 9]].forEach(([x, y]) => px(x, y, K));
+    } else if (blinking) {
+      [[3, 8], [4, 8], [8, 8], [9, 8]].forEach(([x, y]) => px(x, y, K));
+    } else if (face === 'angry') {
+      [[3, 6], [4, 7], [9, 6], [8, 7]].forEach(([x, y]) => px(x, y, K));   // furrowed brows
+      px(4, 8, C.red); px(8, 8, C.red);
+    } else {   // 'meh': heavy-lidded side-eye
+      [[3, 7], [4, 7], [8, 7], [9, 7]].forEach(([x, y]) => px(x, y, K));
+      px(4, 8, K); px(9, 8, K);
+    }
+
+    if (this.chewT > 0) {
+      if (Math.floor(this.chewT / 5) % 2) { px(6, 9, P); px(6, 10, K); }
+      else { px(5, 9, K); px(7, 9, K); }
+    } else if (face === 'happy') {
+      px(5, 9, K); px(6, 10, K); px(7, 9, K);   // 'w' mouth
+    } else {
+      px(5, 10, K); px(6, 9, K); px(7, 10, K);  // pout
+    }
+  }
+
+  drawMoodMark(g, sx, sy, mood) {
+    const mx = sx + (this.face > 0 ? 12 : 0);
+    if (mood === MOODS.hangry && blink(30)) {
+      g.fill(C.red);
+      g.rect(mx, sy + 2, 1, 3);
+      g.rect(mx - 1, sy + 3, 3, 1);
+    } else if (mood === MOODS.sassy && Math.floor(frameCount / 20) % 3 === 0) {
+      g.fill(C.yellow);
+      g.rect(mx, sy + 1, 1, 3);
+      g.rect(mx - 1, sy + 2, 3, 1);
+    }
+  }
+}
+
+// A friendly alien. Chatty in EXPLORE mode.
+class Npc {
+  constructor(data, worldId) {
+    Object.assign(this, data);
+    this.worldId = worldId;
+    this.species = SPECIES[THEMES[worldId].species];
+    this.frames = SPR[npcSpriteKey(worldId, data.name)];
+    this.chatIndex = 0;
+    this.met = false;
+  }
+
+  get top() { return horizonY(this.x) - 7 - (this.species.float ? 3 : 0); }
+  get box() { return { x: this.x - 4, y: this.top, w: 8, h: 8 }; }
+  get talking() { return speech.speaker === this && speech.life > 0; }
+  get tagColor() { return this.tag || this.color; }   // readable name colour for dark-bodied aliens
+
+  nextChat() {
+    const chat = this.chats[this.chatIndex % this.chats.length];
+    this.chatIndex++;
+    return chat;
+  }
+
+  draw(g, t) {
+    const hop = this.talking && Math.floor(t / 6) % 2 ? 1 : 0;
+    const float = this.species.float ? Math.round(Math.sin(t * 0.05 + this.x) * 1.5) : 0;
+    const top = this.top - hop + float;
+    const frame = Math.floor((t + this.x) / 22) % 2;
+    blit(g, this.frames[frame], this.x - Math.floor(this.frames[0].width / 2), top);
+    if (this.crown) {
+      g.fill(C.gold);
+      g.rect(this.x - 2, top - 2, 5, 1);
+      g.rect(this.x - 2, top - 3, 1, 1); g.rect(this.x, top - 3, 1, 1); g.rect(this.x + 2, top - 3, 1, 1);
+    }
+    if (isExplore() && !this.met && game.state !== 'title') {   // bouncing "!" = not met yet
+      const by = top - 8 + Math.round(Math.sin(t * 0.15));
+      g.fill(C.yellow);
+      g.rect(this.x, by, 1, 3);
+      g.rect(this.x, by + 4, 1, 1);
+    }
+  }
+}
+
+class Enemy {
+  constructor({ hp, points, w, h, frames, flash, goo }) {
+    Object.assign(this, { hp, points, w, h, frames, flash, goo });
+    this.t = Math.floor(random(1000));
+    this.flashT = 0;
+    this.bobY = 0;
+    this.dead = false;
+  }
+
+  get box() { return { x: this.x - this.w / 2, y: this.y - this.h / 2, w: this.w, h: this.h }; }
+
+  tick() {
+    this.t++;
+    if (this.flashT > 0) this.flashT--;
+  }
+
+  damage(n) {
+    if (this.dead) return false;
+    this.hp -= n;
+    this.flashT = 6;
+    if (this.hp > 0) return false;
+    this.dead = true;
+    onEnemyKilled(this);
+    return true;
+  }
+
+  draw(g) {
+    const img = this.flashT > 0 ? this.flash : this.frames[Math.floor(this.t / 14) % 2];
+    blit(g, img, this.x - this.w / 2, this.y - this.h / 2 + this.bobY);
+  }
+}
+
+// Hovers in the sky and lobs slime at the bunny.
+class Flyer extends Enemy {
+  constructor() {
+    super({ hp: 1, points: 100, w: 11, h: 8, frames: [SPR.flyerA, SPR.flyerB], flash: SPR.flyerFlash,
+            goo: [C.pink, C.hotPink, C.lime] });
+    this.x = random(20, VIEW_W - 20);
+    this.y = -8;
+    this.homeY = random(34, 66);
+    this.dir = random([-1, 1]);
+    this.speed = 0.3 + game.wave * 0.03;
+    this.shootT = random(140, 240);
+  }
+
+  get vx() { return this.dir * this.speed; }
+
+  update() {
+    this.tick();
+    this.homeY = Math.min(this.homeY + 0.002 * game.wave, GROUND_Y - 50);   // slowly creeps lower
+    this.y += (this.homeY + Math.sin(this.t * 0.05) * 3 - this.y) * 0.03;
+    this.x += this.vx;
+    if (this.x < 10 || this.x > VIEW_W - 10) { this.dir *= -1; this.x = clamp(this.x, 10, VIEW_W - 10); }
+    if (this.y > 0 && --this.shootT <= 0) {
+      slimes.push(new Slime(this.x, this.y + 4, bunny.x + random(-12, 12), GROUND_Y - 6));
+      Sfx.slime();
+      this.shootT = random(220, 360) / (1 + game.wave * 0.05);
+    }
+  }
+}
+
+// Scoots along the moon and hugs the bunny. Aggressively.
+class Crawler extends Enemy {
+  constructor() {
+    super({ hp: 2, points: 150, w: 9, h: 8, frames: [SPR.crawlerA, SPR.crawlerB], flash: SPR.crawlerFlash,
+            goo: [C.lime, C.green, C.white] });
+    this.dir = random([-1, 1]);
+    this.x = this.dir > 0 ? -8 : VIEW_W + 8;
+    this.y = GROUND_Y - this.h / 2;
+    this.speed = 0.2 + game.wave * 0.025;
+  }
+
+  get vx() { return this.dir * this.speed; }
+
+  update() {
+    this.tick();
+    this.dir = Math.sign(bunny.x - this.x) || this.dir;
+    this.x += this.vx;
+    this.bobY = -Math.round(Math.abs(Math.sin(this.t * 0.12)) * 2);
+    if (boxesOverlap(this.box, bunny.box)) {
+      this.dead = true;
+      burst(this.x, this.y, 10, this.goo, 1.2);
+      bunny.hurt('hit');
+    }
+  }
+}
+
+class CarrotGrenade {
+  constructor(x, y, tx, ty) {
+    const v = launch(x, y, tx, ty, GRAVITY, 2.4, 18, 55);
+    Object.assign(this, { x, y, vx: v.vx, vy: v.vy, life: v.T });
+    this.rot = 0;
+    this.dead = false;
+  }
+
+  update() {
+    this.vy += GRAVITY;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.rot += 0.35;
+    this.life--;
+    if (frameCount % 2 === 0) particles.push(new Particle(this.x, this.y, random(-0.2, 0.2), random(-0.2, 0.2), 12, random([C.yellow, C.orange]), 0));
+
+    const hit = enemies.find(e => !e.dead && pointInBox(this.x, this.y, e.box, 2));
+    if (hit || this.life <= 0 || this.y >= GROUND_Y - 1) {
+      this.dead = true;
+      detonate(this.x, Math.min(this.y, GROUND_Y - 1), hit);
+    }
+  }
+
+  draw(g) {
+    g.push();
+    g.translate(Math.round(this.x), Math.round(this.y));
+    g.rotate(this.rot);
+    g.image(SPR.carrot, -2, -3);
+    g.pop();
+  }
+}
+
+class Slime {
+  constructor(x, y, tx, ty) {
+    this.grav = GRAVITY * 0.45;
+    const v = launch(x, y, tx, ty, this.grav, 1.1, 50, 100);
+    Object.assign(this, { x, y, vx: v.vx, vy: v.vy });
+    this.dead = false;
+  }
+
+  update() {
+    this.vy += this.grav;
+    this.x += this.vx;
+    this.y += this.vy;
+    if (pointInBox(this.x, this.y, bunny.box)) {
+      this.dead = true;
+      burst(this.x, this.y, 8, [C.lime, C.green], 1);
+      bunny.hurt('hit');
+    } else if (this.y >= GROUND_Y - 1) {
+      this.dead = true;
+      burst(this.x, GROUND_Y - 1, 6, [C.lime, C.green], 0.8);
+    } else if (this.x < -5 || this.x > VIEW_W + 5) {
+      this.dead = true;
+    }
+  }
+
+  draw(g) {
+    const x = Math.round(this.x), y = Math.round(this.y);
+    g.fill('rgba(57,255,20,0.4)');
+    g.rect(Math.round(x - this.vx * 3), Math.round(y - this.vy * 3), 1, 1);
+    g.fill(C.green);
+    g.rect(x - 1, y - 1, 3, 3);
+    g.fill(C.lime);
+    g.rect(x - 1, y - 1, 1, 1);
+  }
+}
+
+class Snack {
+  constructor(type, x, y) {
+    Object.assign(this, { type, x, y });
+    this.img = SPR[SNACKS[type].sprite];
+    this.t = 0;
+    this.landed = false;
+    this.groundT = 0;
+    this.dead = false;
+  }
+
+  get box() {
+    return { x: this.x - this.img.width / 2, y: this.y - this.img.height, w: this.img.width, h: this.img.height };
+  }
+
+  update() {
+    this.t++;
+    if (!this.landed) {
+      this.y += 0.4;
+      this.x += Math.sin(this.t * 0.05) * 0.25;
+      if (this.y >= GROUND_Y) { this.y = GROUND_Y; this.landed = true; }
+    } else if (++this.groundT > 600) {
+      this.dead = true;
+    }
+    if (boxesOverlap(this.box, bunny.box)) {
+      this.dead = true;
+      burst(this.x, this.y - 3, 8, [C.yellow, C.white, C.hotPink], 0.9);
+      SNACKS[this.type].apply();
+    }
+  }
+
+  draw(g) {
+    if (this.groundT > 480 && Math.floor(this.groundT / 5) % 2) return;   // blink before vanishing
+    const b = this.box;
+    if (!this.landed) blit(g, SPR.parachute, Math.round(this.x) - 4, b.y - 6);
+    const hop = this.landed ? -Math.round(Math.abs(Math.sin(this.t * 0.1))) : 0;
+    blit(g, this.img, b.x, b.y + hop);
+  }
+}
+
+// Friendly delivery saucer that parachutes snacks down near the camera.
+class SupplyShip {
+  constructor() {
+    const left = game.camX;
+    this.dir = random([-1, 1]);
+    this.x = this.dir > 0 ? left - 10 : left + VIEW_W + 10;
+    this.y = 38;
+    this.t = 0;
+    this.dead = false;
+    const count = random() < 0.4 ? 2 : 1;
+    this.drops = Array.from({ length: count }, () => left + random(24, VIEW_W - 24)).sort((a, b) => (a - b) * this.dir);
+  }
+
+  update() {
+    this.t++;
+    this.x += this.dir * 0.7;
+    if (this.drops.length && (this.x - this.drops[0]) * this.dir >= 0) {
+      this.drops.shift();
+      snacks.push(new Snack(pickSnackType(), this.x, this.y + 8));
+    }
+    if (this.x < game.camX - 30 || this.x > game.camX + VIEW_W + 30) this.dead = true;
+  }
+
+  draw(g) {
+    const x = Math.round(this.x) - 7;
+    const y = Math.round(this.y + Math.sin(this.t * 0.08)) - 3;
+    blit(g, SPR.saucer, x, y);
+    const lit = Math.floor(this.t / 8) % 3;
+    [2, 7, 12].forEach((lx, i) => { g.fill(i === lit ? C.yellow : C.hotPink); g.rect(x + lx, y + 4, 1, 1); });
+  }
+}
+
+class Particle {
+  constructor(x, y, vx, vy, life, col, grav = 0.03) {
+    Object.assign(this, { x, y, vx, vy, life, col, grav });
+  }
+  get dead() { return this.life <= 0; }
+  update() {
+    this.vy += this.grav;
+    this.x += this.vx;
+    this.y += this.vy;
+    if (this.y > GROUND_Y + 2 && this.vy > 0) this.life = 0;
+    this.life--;
+  }
+  draw(g) {
+    g.fill(this.col);
+    g.rect(Math.round(this.x), Math.round(this.y), 1, 1);
+  }
+}
+
+class Explosion {
+  constructor(x, y, colors) {
+    Object.assign(this, { x, y, colors });
+    this.t = 0;
+  }
+  get dead() { return this.t > 18; }
+  update() { this.t++; }
+  draw(g) {
+    const [flash, outer, inner, ring] = this.colors;
+    const r = Math.min(BLAST_RADIUS, 3 + this.t * 1.6);
+    if (this.t < 4) {
+      pixelDisc(g, this.x, this.y, r * 0.8, flash);
+    } else if (this.t < 10) {
+      pixelDisc(g, this.x, this.y, r, outer);
+      pixelDisc(g, this.x, this.y, r * 0.6, inner);
+    } else {
+      pixelRing(g, this.x, this.y, r, ring);
+      pixelRing(g, this.x, this.y, r - 3, 'rgba(185,103,255,0.6)');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+// 13. SPEECH — bunny quips and alien conversations
+// ---------------------------------------------------------------------
+function showLine(text, speaker = null) {
+  Object.assign(speech, { text, speaker, shown: 0, life: 150 + text.length * 3 });
+  speech.cooldown = speaker || speech.convo ? speech.life : 100;   // don't let quips interrupt chats
+  game.idleT = 0;
+}
+
+function sayFrom(pool, force = false) {
+  if (!force && speech.cooldown > 0) return;
+  let line;
+  do { line = random(pool); } while (pool.length > 1 && line === speech.last);
+  speech.last = line;
+  speech.queue = [];
+  speech.convo = null;
+  showLine(line.replace('{wave}', game.wave));
+}
+function say(category, force = false) { sayFrom(LINES[category], force); }
+
+function talkTo(npc) {
+  if (speech.convo === npc && speech.life > 0) { advanceSpeech(); return; }
+  const [alienLine, bunnyReply] = npc.nextChat();
+  speech.convo = npc;
+  speech.queue = [{ text: bunnyReply, speaker: null }];
+  if (!npc.met) {
+    npc.met = true;
+    if (allNpcs().every(n => n.met)) {
+      speech.queue.push({ text: LINES.allFriends[0], speaker: null });
+      showBanner('ALL FRIENDS MET!', 'solar system mayor', 220);
+      Sfx.wave();
+    }
+  }
+  showLine(alienLine, npc);
+}
+
+// Finish typing the current line, or skip to the next one.
+function advanceSpeech() {
+  if (speech.shown < speech.text.length) { speech.shown = speech.text.length; return; }
+  if (speech.queue.length) { const next = speech.queue.shift(); showLine(next.text, next.speaker); return; }
+  endConversation();
+}
+
+function endConversation() {
+  speech.life = 0;
+  speech.queue = [];
+  speech.convo = null;
+  speech.cooldown = 30;
+}
+
+function updateSpeech() {
+  if (speech.cooldown > 0) speech.cooldown--;
+  if (speech.life <= 0) return;
+  if (--speech.life <= 0) {
+    if (speech.queue.length) advanceSpeech();
+    else speech.convo = null;
+    return;
+  }
+  const before = Math.floor(speech.shown);
+  speech.shown = Math.min(speech.text.length, speech.shown + 0.9);
+  if (Math.floor(speech.shown) !== before && before % 3 === 0) Sfx.blip(!!speech.speaker);
+}
+
+function nearestNpc() {
+  let best = null;
+  for (const npc of currentNpcs()) {
+    const d = Math.abs(npc.x - bunny.x);
+    if (d < 18 && (!best || d < Math.abs(best.x - bunny.x))) best = npc;
+  }
+  return best;
+}
+
+// What E / Enter would interact with right now: the rocket or an alien.
+function nearestTarget() {
+  const npc = nearestNpc();
+  const shipDist = Math.abs(World.theme.shipX - bunny.x);
+  if (shipDist < 14 && (!npc || shipDist < Math.abs(npc.x - bunny.x))) return { kind: 'ship' };
+  return npc ? { kind: 'npc', npc } : null;
+}
+
+// ---------------------------------------------------------------------
+// 14. SPACE TRAVEL — star map, launch, flight scene, landing
+// ---------------------------------------------------------------------
+function dismissTip() {
+  game.tip = null;
+  say('explore', true);
+  Sfx.select();
+}
+
+function openStarMap() {
+  endConversation();
+  game.travel = { phase: 'map', t: 0, sel: MAP_ORDER.indexOf(World.id), lift: 0 };
+  Sfx.select();
+}
+
+function closeStarMap() { game.travel = null; }
+
+function chooseDestination(i) {
+  const dest = MAP_ORDER[i];
+  if (dest === World.id) { closeStarMap(); say('samePlace', true); return; }
+  game.travel = { phase: 'launch', t: 0, dest, lift: 0 };
+  say('launch', true);
+  Sfx.launch();
+}
+
+function updateTravel() {
+  const tr = game.travel;
+  tr.t++;
+  if (tr.phase === 'launch') {
+    tr.lift = tr.t * tr.t * 0.03;
+    shipExhaust(tr);
+    if (tr.t >= LAUNCH_FRAMES) {
+      World.get(tr.dest);   // bake the destination now, hidden by the flight scene
+      Object.assign(tr, { phase: 'flight', t: 0, stars: makeFlightStars() });
+    }
+  } else if (tr.phase === 'flight') {
+    tr.stars.forEach(s => {
+      s.x -= s.speed;
+      if (s.x < -6) { s.x = VIEW_W + random(10); s.y = random(VIEW_H); }
+    });
+    if (tr.t === 40) say('flight', true);
+    if (tr.t >= FLIGHT_FRAMES) {
+      arriveAt(tr.dest);
+      Object.assign(tr, { phase: 'landing', t: 0 });
+      Sfx.land();
+    }
+  } else if (tr.phase === 'landing') {
+    tr.lift = Math.pow(Math.max(0, LANDING_FRAMES - tr.t), 2) * 0.04;
+    shipExhaust(tr);
+    if (tr.t >= LANDING_FRAMES) finishLanding();
+  }
+}
+
+function makeFlightStars() {
+  return Array.from({ length: 50 }, () => ({
+    x: random(VIEW_W), y: random(VIEW_H), speed: random(1, 6), col: random([C.white, C.cyan, C.hotPink, C.yellow]),
+  }));
+}
+
+function shipExhaust(tr) {
+  const x = World.theme.shipX;
+  const bottom = horizonY(x) + 1 - tr.lift;
+  particles.push(new Particle(x + random(-1, 1), bottom, random(-0.3, 0.3), random(0.4, 0.9), 20,
+                              random([C.yellow, C.orange, C.pink]), 0));
+  if (tr.lift < 25 && random() < 0.5) {   // dust kicked up from the launch pad
+    particles.push(new Particle(x + random(-8, 8), GROUND_Y - 1, random(-0.8, 0.8), random(-0.4, -0.1), 30,
+                                random([World.theme.ground.light, World.theme.ground.base]), 0.01));
+  }
+}
+
+function arriveAt(dest) {
+  World.enter(dest);
+  game.visited.add(dest);
+  snacks = []; ships = []; grenades = []; explosions = []; particles = []; popups = [];
+  bunny.x = World.theme.shipX + 14;
+  bunny.y = GROUND_Y;
+  game.camX = clamp(bunny.x - VIEW_W / 2, 0, worldWidth() - VIEW_W);
+}
+
+function finishLanding() {
+  const theme = World.theme;
+  game.travel = null;
+  bunny.face = 1;
+  bunny.vy = -1.8;
+  bunny.onGround = false;
+  burst(bunny.x, bunny.y - 8, 12, NEON, 1);
+  showBanner(theme.name, theme.tagline, 180);
+  sayFrom([theme.arrival], true);
+}
+
+// ---------------------------------------------------------------------
+// 15. GAME ACTIONS
+// ---------------------------------------------------------------------
+function burst(x, y, n, cols, speed = 1, grav = 0.03) {
+  for (let i = 0; i < n; i++) {
+    const a = random(TWO_PI), s = random(0.3, 1) * speed;
+    particles.push(new Particle(x, y, Math.cos(a) * s, Math.sin(a) * s - 0.3, random(20, 40), random(cols), grav));
+  }
+}
+
+function popup(text, col, x = bunny.x, y = bunny.y - 24) {
+  popups.push({ text, col, x, y, life: 60 });
+}
+
+function showBanner(title, sub, t) {
+  game.banner = { title, sub, t, t0: t };
+}
+
+// `food` is a key of EAT_LINES / EAT_POPUPS.
+function feed(amount, food) {
+  const wasHangry = game.hunger < 25;
+  game.hunger = Math.min(100, game.hunger + amount);
+  game.snackStreak = frameCount - game.lastSnackAt < 300 ? game.snackStreak + 1 : 1;
+  game.lastSnackAt = frameCount;
+  game.happyT = 240;
+  bunny.chewT = 50;
+  burst(bunny.x + bunny.face * 2, bunny.y - 7, 6, [C.orange, C.yellow], 0.6);
+  Sfx.eat();
+  const pop = EAT_POPUPS[food];
+  popup(random(pop.words), pop.color);
+  sayFrom(eatingLines(food, wasHangry), !speech.convo);   // never interrupt an alien chat
+}
+
+function eatingLines(food, wasHangry) {
+  if (wasHangry) return EAT_LINES.hangry;
+  if (game.hunger >= 100) return EAT_LINES.stuffed;
+  if (game.snackStreak >= 3) return EAT_LINES.buffet;
+  const local = World.theme.snackLines;
+  if (isExplore() && local && random() < 0.35) return local;
+  return EAT_LINES[food];
+}
+
+// Feed the bunny by hand. In PLAY mode this costs a carrot grenade.
+function feedBunny() {
+  if (game.hunger >= 95) { say('full', true); return; }
+  if (isExplore()) { feed(15, 'handFed'); return; }
+  if (game.ammo <= 0) { Sfx.empty(); say('noAmmo', true); return; }
+  game.ammo--;
+  feed(15, 'stash');
+}
+
+function throwOrigin(tx) {
+  const face = tx < bunny.x ? -1 : 1;
+  return { face, x: bunny.x + face * 4, y: bunny.y - 12 };
+}
+
+// In EXPLORE mode carrots are free, harmless fireworks.
+function throwAt(tx, ty) {
+  if (game.throwCD > 0) return;
+  if (!isExplore() && game.ammo <= 0) { Sfx.empty(); say('noAmmo'); return; }
+  const o = throwOrigin(tx);
+  bunny.face = o.face;
+  grenades.push(new CarrotGrenade(o.x, o.y, tx, Math.min(ty, GROUND_Y - 1)));
+  game.throwCD = THROW_COOLDOWN;
+  Sfx.toss();
+  if (isExplore()) return;
+  game.ammo--;
+  if (game.ammo === 0) say('lastCarrot', true);
+}
+
+// Keyboard throw: aim at the nearest visible alien, leading its movement.
+function throwAuto() {
+  const target = enemies
+    .filter(e => !e.dead && e.y > 0)
+    .sort((a, b) => dist(a.x, a.y, bunny.x, bunny.y) - dist(b.x, b.y, bunny.x, bunny.y))[0];
+  if (!target) { throwAt(bunny.x + bunny.face * 60, isExplore() ? GROUND_Y - 50 : GROUND_Y - 1); return; }
+  const o = throwOrigin(target.x);
+  const { T } = launch(o.x, o.y, target.x, target.y, GRAVITY, 2.4, 18, 55);
+  throwAt(target.x + target.vx * T, target.y);
+}
+
+function detonate(x, y, directHit) {
+  if (isExplore()) {
+    explosions.push(new Explosion(x, y, [C.white, random(NEON), random(NEON), random(NEON)]));
+    burst(x, y, 24, NEON, 1.6, 0.015);
+    Sfx.pop();
+    if (random() < 0.15) say('firework');
+    return;
+  }
+
+  explosions.push(new Explosion(x, y, [C.white, C.orange, C.yellow, C.hotPink]));
+  burst(x, y, 16, [C.yellow, C.orange, C.hotPink, C.white], 1.8);
+  burst(x, y, 5, [C.green, C.lime], 1.0);
+  game.shake = Math.max(game.shake, 4);
+  Sfx.boom();
+
+  let kills = 0;
+  if (directHit && directHit.damage(1)) kills++;   // direct hits deal bonus damage
+  for (const e of enemies) {
+    if (!e.dead && dist(x, y, e.x, e.y) <= BLAST_RADIUS && e.damage(1)) kills++;
+  }
+  slimes.forEach(s => { if (dist(x, y, s.x, s.y) <= BLAST_RADIUS) s.dead = true; });
+
+  if (kills >= 2) {
+    const bonus = 100 * kills;
+    game.score += bonus;
+    popup(`COMBO x${kills}!`, C.hotPink, x, y - 14);
+    say('combo', true);
+  } else if (kills === 1 && random() < 0.4) {
+    say('kill');
+  }
+}
+
+function onEnemyKilled(e) {
+  game.score += e.points;
+  game.happyT = 150;
+  popup(`+${e.points}`, C.yellow, e.x, e.y - 8);
+  burst(e.x, e.y, 12, e.goo, 1.3);
+}
+
+function pickSnackType() {
+  const table = {
+    carrot: game.ammo < 4 && !isExplore() ? 70 : 40,
+    cheese: 25,
+    cookie: 22,
+    heart: !isExplore() && game.hearts < MAX_HEARTS ? 12 : 0,
+  };
+  let r = random(Object.values(table).reduce((a, b) => a + b, 0));
+  for (const [type, weight] of Object.entries(table)) {
+    if ((r -= weight) < 0) return type;
+  }
+  return 'carrot';
+}
+
+function currentMood() {
+  if (game.state === 'over' || bunny.invulnT > INVULN_FRAMES - 30) return MOODS.grumpy;
+  if (game.hunger < 25) return MOODS.hangry;
+  if (game.happyT > 0) return MOODS.sassy;
+  return MOODS.moody;
+}
+
+// ---------------------------------------------------------------------
+// 16. GAME FLOW
+// ---------------------------------------------------------------------
+function resetWorld() {
+  bunny = new Bunny();
+  enemies = []; grenades = []; slimes = []; snacks = []; ships = [];
+  explosions = []; particles = []; popups = [];
+  game.npcsByWorld = Object.fromEntries(Object.entries(THEMES).map(([id, theme]) => [id, theme.npcs.map(d => new Npc(d, id))]));
+  game.visited = new Set(['moon']);
+  Object.assign(game, {
+    score: 0, hearts: MAX_HEARTS, ammo: START_AMMO, hunger: 100, camX: 0, travel: null,
+    wave: 0, toSpawn: 0, spawnT: 0, nextWaveT: 0, banner: null,
+    supplyT: 180, starveT: 0, happyT: 0, shake: 0, throwCD: 0,
+    idleT: 0, overT: 0, warnedHungry: false, newBest: false,
+    snackStreak: 0, lastSnackAt: -9999, tip: null,
+  });
+  World.enter('moon');
+  endConversation();
+}
+
+function startGame(mode) {
+  resetWorld();
+  game.mode = mode;
+  game.state = 'play';
+  if (mode === 'play') {
+    startWave(1, true);
+    say('start', true);
+  } else {
+    bunny.x = 112;   // right next to the Carrot Rocket
+    game.supplyT = 360;
+    game.tip = { t: 0 };   // "you can fly to other planets!" pop-up
+  }
+}
+
+function goToMenu() {
+  resetWorld();
+  game.mode = 'play';
+  game.state = 'title';
+  bunny.x = 48;
+  say('title', true);
+}
+
+function startWave(n, quiet = false) {
+  game.wave = n;
+  game.toSpawn = 2 + n;
+  game.spawnT = 120;
+  showBanner(`WAVE ${n}`, 'evil aliens incoming!', 150);
+  Sfx.wave();
+  if (!quiet) say('wave', true);
+}
+
+function gameOver() {
+  game.state = 'over';
+  game.overT = 0;
+  if (game.score > game.hiScore) {
+    game.hiScore = game.score;
+    game.newBest = true;
+    saveHiScore(game.score);
+  }
+  grenades.forEach(o => burst(o.x, o.y, 4, [C.orange], 0.5));
+  slimes.forEach(o => burst(o.x, o.y, 4, [C.lime], 0.5));
+  grenades = [];
+  slimes = [];
+  say('gameover', true);
+  speech.life = Infinity;
+  Sfx.gameOver();
+}
+
+function togglePause() {
+  if (game.state === 'play') game.state = 'paused';
+  else if (game.state === 'paused') game.state = 'play';
+}
+
+// ---------------------------------------------------------------------
+// 17. UPDATE
+// ---------------------------------------------------------------------
+function updateAll(list) {
+  list.forEach(o => o.update());
+  return list.filter(o => !o.dead);
+}
+
+function updatePlay() {
+  if (game.tip) {   // the rocket pop-up pauses the action until dismissed (or it times out)
+    bunny.update({ left: false, right: false });
+    updateEffects();
+    if (++game.tip.t > TIP_FRAMES) dismissTip();
+    return;
+  }
+  if (game.travel) {
+    if (game.travel.phase === 'map') bunny.update({ left: false, right: false });
+    else updateTravel();
+    updateEffects();
+    return;
+  }
+
+  bunny.update({
+    left: keyIsDown(KEY.left) || keyIsDown(KEY.a),
+    right: keyIsDown(KEY.right) || keyIsDown(KEY.d),
+  });
+  updateHunger();
+  if (game.state !== 'play') return;   // starved
+  if (!isExplore()) updateWaves();
+  updateSupply();
+
+  enemies = updateAll(enemies);
+  if (game.state !== 'play') return;   // an enemy may have ended the game
+  grenades = updateAll(grenades);
+  slimes = updateAll(slimes);
+  if (game.state !== 'play') return;
+  snacks = updateAll(snacks);
+  ships = updateAll(ships);
+  updateEffects();
+
+  // Walking away politely ends a chat.
+  if (speech.convo && Math.abs(speech.convo.x - bunny.x) > 60) endConversation();
+
+  if (game.throwCD > 0) game.throwCD--;
+  if (game.happyT > 0) game.happyT--;
+  if (game.banner && --game.banner.t <= 0) game.banner = null;
+  if (++game.idleT > 620) sayFrom(isExplore() ? World.theme.idle : LINES.idle);
+}
+
+function updateHunger() {
+  const drain = HUNGER_DRAIN * (isExplore() ? 0.6 : 1 + game.wave * 0.04);
+  game.hunger = Math.max(0, game.hunger - drain);
+  if (game.hunger < 25 && !game.warnedHungry) { game.warnedHungry = true; say('hungry', !speech.convo); }
+  if (game.hunger > 40) game.warnedHungry = false;
+  if (isExplore() || game.hunger > 0) { game.starveT = 0; return; }   // exploring is never dangerous
+  if (++game.starveT >= STARVE_INTERVAL) {
+    game.starveT = 0;
+    bunny.hurt('starving', true);
+  }
+}
+
+function updateWaves() {
+  if (game.toSpawn > 0) {
+    if (--game.spawnT <= 0) {
+      const crawlerChance = Math.min(0.4, 0.05 + game.wave * 0.05);
+      enemies.push(random() < crawlerChance ? new Crawler() : new Flyer());
+      game.toSpawn--;
+      game.spawnT = Math.max(60, 170 - game.wave * 8) * random(0.8, 1.3);
+    }
+  } else if (enemies.length === 0 && game.nextWaveT === 0) {
+    const bonus = game.wave * 250;
+    game.score += bonus;
+    showBanner('WAVE CLEAR!', `+${bonus} bonus`, 130);
+    game.nextWaveT = 200;
+    say('waveClear');
+    Sfx.pickup();
+  }
+  if (game.nextWaveT > 0 && --game.nextWaveT === 0) startWave(game.wave + 1);
+}
+
+function updateSupply() {
+  const carrotsAround = snacks.some(s => s.type === 'carrot');
+  if (!isExplore() && game.ammo === 0 && !carrotsAround && game.supplyT > 120) game.supplyT = 120;   // never soft-lock
+  if (--game.supplyT <= 0) {
+    ships.push(new SupplyShip());
+    game.supplyT = random(360, 560);
+  }
+}
+
+function updateEffects() {
+  explosions = updateAll(explosions);
+  particles = updateAll(particles);
+  popups.forEach(p => { p.y -= 0.25; p.life--; });
+  popups = popups.filter(p => p.life > 0);
+  game.shake = Math.max(0, game.shake - 0.3);
+}
+
+function updateAmbient() {
+  bunny.update({ left: false, right: false });
+  updateEffects();
+  if (game.state === 'title') {
+    if (random() < 0.004) bunny.jump();
+    if (++game.idleT > 300) say('title');
+  } else {
+    game.overT++;
+  }
+}
+
+// Returns how far the camera moved (weather uses it for parallax).
+function updateCamera() {
+  const before = game.camX;
+  const maxX = worldWidth() - VIEW_W;
+  const target = clamp(bunny.x - VIEW_W / 2, 0, maxX);
+  game.camX = Math.round(clamp(game.camX + (target - game.camX) * 0.12, 0, maxX));
+  return game.camX - before;
+}
+
+// ---------------------------------------------------------------------
+// 18. RENDER — low-res world
+// ---------------------------------------------------------------------
+const travelPhase = () => (game.travel ? game.travel.phase : null);
+const bunnyInShip = () => ['launch', 'flight', 'landing'].includes(travelPhase());
+
+function renderWorld(g) {
+  if (travelPhase() === 'flight') { drawFlight(g, game.travel); return; }
+
+  World.drawSky(g);
+  g.push();
+  g.translate(-game.camX, 0);
+  World.drawGround(g);
+  ships.forEach(o => o.draw(g));
+  snacks.forEach(o => o.draw(g));
+  enemies.forEach(o => o.draw(g));
+  if (!bunnyInShip()) bunny.draw(g, currentMood());
+  grenades.forEach(o => o.draw(g));
+  slimes.forEach(o => o.draw(g));
+  explosions.forEach(o => o.draw(g));
+  particles.forEach(o => o.draw(g));
+  if (game.state === 'play' && !game.travel) drawCursor(g);
+  g.pop();
+  World.drawWeather(g);
+
+  if (game.state !== 'title') drawHud(g);
+  if (game.state === 'play' && isExplore() && !game.travel) drawEdgeArrows(g);
+  if (travelPhase() === 'map') drawStarMap(g, game.travel);
+  if (game.tip) drawRocketArrow(g);
+}
+
+// Dotted throw arc + reticle, or a heart / speech cursor over the bunny, an alien or the rocket.
+function drawCursor(g) {
+  if (!mouseInView()) return;
+  const m = mouseWorld();
+  if (mouseOnBunny()) { blit(g, SPR.heart, m.x - 3, m.y - 3); return; }
+  if (isExplore() && (npcUnderMouse() || mouseOnShip())) { drawChatIcon(g, m.x, m.y); return; }
+
+  const armed = isExplore() || game.ammo > 0;
+  const ty = Math.min(m.y, GROUND_Y - 1);
+  const o = throwOrigin(m.x);
+  const { T, vx, vy: vy0 } = launch(o.x, o.y, m.x, ty, GRAVITY, 2.4, 18, 55);
+  let x = o.x, y = o.y, vy = vy0;
+  g.fill(armed ? 'rgba(255,255,255,0.75)' : 'rgba(106,88,168,0.8)');
+  for (let i = 1; i <= T; i++) {
+    vy += GRAVITY; x += vx; y += vy;
+    if ((i + (World.t >> 2)) % 5 === 0) g.rect(Math.round(x), Math.round(y), 1, 1);
+  }
+  const rx = Math.round(m.x), ry = Math.round(ty);
+  g.fill(armed ? C.hotPink : C.moonDark);
+  g.rect(rx - 3, ry, 2, 1); g.rect(rx + 2, ry, 2, 1);
+  g.rect(rx, ry - 3, 1, 2); g.rect(rx, ry + 2, 1, 2);
+}
+
+function drawChatIcon(g, x, y) {
+  x = Math.round(x) - 3;
+  y = Math.round(y) - 3;
+  g.fill(C.white); g.rect(x, y, 7, 4); g.rect(x + 1, y + 4, 2, 1);
+  g.fill(C.ink); g.rect(x + 1, y + 2, 1, 1); g.rect(x + 3, y + 2, 1, 1); g.rect(x + 5, y + 2, 1, 1);
+}
+
+function npcUnderMouse() {
+  const m = mouseWorld();
+  return currentNpcs().find(npc => pointInBox(m.x, m.y, npc.box, 3));
+}
+function mouseOnShip() { const m = mouseWorld(); return pointInBox(m.x, m.y, shipBox(), 2); }
+
+function drawEdgeArrows(g) {
+  if (!blink(40)) return;
+  const y = GROUND_Y - 24;
+  g.fill(C.yellow);
+  if (game.camX < worldWidth() - VIEW_W) {
+    for (let i = 0; i < 3; i++) g.rect(VIEW_W - 7 + i, y - 2 + i, 1, 5 - i * 2);
+  }
+  if (game.camX > 0) {
+    for (let i = 0; i < 3; i++) g.rect(6 - i, y - 2 + i, 1, 5 - i * 2);
+  }
+}
+
+function drawHud(g) {
+  if (!isExplore()) {
+    const lowHeart = game.hearts === 1 && !blink(20);
+    for (let i = 0; i < MAX_HEARTS; i++) {
+      const full = i < game.hearts && !(lowHeart && i === 0);
+      blit(g, full ? SPR.heart : SPR.heartEmpty, 4 + i * 8, 3);
+    }
+    blit(g, SPR.carrot, VIEW_W - 23, 15);
+  }
+
+  const bx = 4, by = 12, bw = 40, bh = 5;
+  const fillW = Math.round(bw * game.hunger / 100);
+  g.fill(C.black); g.rect(bx - 1, by - 1, bw + 2, bh + 2);
+  g.fill('#3a1d5c'); g.rect(bx, by, bw, bh);
+  g.fill(game.hunger > 50 ? C.green : game.hunger > 25 ? C.yellow : blink(20) ? C.red : C.hotPink);
+  g.rect(bx, by, fillW, bh);
+  g.fill('rgba(255,255,255,0.4)'); g.rect(bx, by, fillW, 1);
+}
+
+function drawStarMap(g, tr) {
+  g.fill('rgba(7,1,26,0.93)');
+  g.rect(8, 6, VIEW_W - 16, VIEW_H - 12);
+  g.fill(C.cyan);   // notched pixel frame
+  g.rect(9, 6, VIEW_W - 18, 1); g.rect(9, VIEW_H - 7, VIEW_W - 18, 1);
+  g.rect(8, 7, 1, VIEW_H - 14); g.rect(VIEW_W - 9, 7, 1, VIEW_H - 14);
+
+  pixelDisc(g, 20, MAP_Y, 9, 'rgba(255,159,28,0.3)');   // the sun
+  pixelDisc(g, 20, MAP_Y, 6, C.gold);
+  pixelDisc(g, 19, MAP_Y - 1, 3, C.yellow);
+  g.fill('rgba(185,103,255,0.5)');
+  for (let x = 30; x < VIEW_W - 12; x += 3) g.rect(x, MAP_Y, 1, 1);
+
+  MAP_ORDER.forEach((id, i) => {
+    const x = MAP_X[i];
+    drawPlanetIcon(g, THEMES[id], x, MAP_Y, THEMES[id].icon.mapR || 5);
+    if (id === World.id) {   // bunny ears = you are here
+      g.fill(C.hotPink);
+      g.rect(x - 2, MAP_Y - 17, 1, 4); g.rect(x + 2, MAP_Y - 17, 1, 4);
+    }
+    if (i === tr.sel && blink(30)) {   // selection brackets
+      g.fill(C.yellow);
+      [[-11, -11], [8, -11], [-11, 10], [8, 10]].forEach(([dx, dy]) => {
+        g.rect(x + dx, MAP_Y + dy, 3, 1);
+        g.rect(x + dx + (dx < 0 ? 0 : 2), MAP_Y + dy + (dy < 0 ? 0 : -2), 1, 3);
+      });
+    }
+  });
+}
+
+// Bouncing arrow pointing at the Carrot Rocket while the pop-up is open.
+function drawRocketArrow(g) {
+  const x = World.theme.shipX - game.camX;
+  const y = shipTop() - 9 + Math.round(Math.sin(frameCount * 0.15) * 2);
+  g.fill(blink(20) ? C.yellow : C.orange);
+  g.rect(x - 1, y, 3, 3);
+  for (let i = 0; i < 4; i++) g.rect(x - 3 + i, y + 3 + i, 7 - i * 2, 1);
+}
+
+function drawFlight(g, tr) {
+  g.fill(C.space0);
+  g.rect(0, 0, VIEW_W, VIEW_H);
+  tr.stars.forEach(s => {   // warp streaks
+    g.fill(s.col);
+    g.rect(Math.round(s.x), Math.round(s.y), Math.max(1, Math.round(s.speed * 1.5)), 1);
+  });
+
+  const p = tr.t / FLIGHT_FRAMES;   // destination swells into view
+  drawPlanetIcon(g, THEMES[tr.dest], Math.round(300 - p * 110), 72, Math.round(4 + p * p * 40));
+
+  const cx = 110, cy = 72 + Math.round(Math.sin(tr.t * 0.12) * 2);
+  for (let i = 0; i < 12; i++) {   // flame trail
+    g.fill(i < 3 ? C.yellow : i < 7 ? C.orange : C.pink);
+    g.rect(cx - 19 - i * 2 - Math.floor(random(2)), cy - 1 + Math.floor(random(-1, 2)) * (i > 3 ? 1 : 0), 2, 2);
+  }
+  g.push();
+  g.translate(cx, cy);
+  g.rotate(HALF_PI);   // nose (leafy top) points toward the destination
+  g.image(SPR.carrotShip, -11, -17, 22, 34);
+  g.pop();
+}
+
+// ---------------------------------------------------------------------
+// 19. RENDER — full-res UI text layer
+// ---------------------------------------------------------------------
+function uiText(str, lx, ly, col, size = 1, align = LEFT) {
+  textSize(FS * size);
+  textAlign(align, TOP);
+  const sh = Math.max(1, Math.round(FS * size / 8));
+  fill(C.black);
+  text(str, lx * S + sh, ly * S + sh);
+  fill(col);
+  text(str, lx * S, ly * S);
+}
+
+function rainbowText(str, cx, ly, size) {
+  textSize(FS * size);
+  textAlign(LEFT, TOP);
+  const cw = textWidth('M');
+  const x0 = cx * S - (cw * str.length) / 2;
+  const sh = Math.max(1, Math.round(FS * size / 8));
+  [...str].forEach((ch, i) => {
+    const x = x0 + i * cw;
+    const y = ly * S + Math.round(Math.sin(frameCount * 0.08 + i * 0.6)) * S;
+    fill(C.black); text(ch, x + sh, y + sh);
+    fill(NEON[(i + Math.floor(frameCount / 10)) % NEON.length]); text(ch, x, y);
+  });
+}
+
+function pixelBox(x, y, w, h, b, fillCol, borderCol) {   // notched corners = 8-bit window
+  [x, y, w, h] = [x, y, w, h].map(Math.round);
+  fill(borderCol);
+  rect(x + b, y, w - 2 * b, b);
+  rect(x + b, y + h - b, w - 2 * b, b);
+  rect(x, y + b, b, h - 2 * b);
+  rect(x + w - b, y + b, b, h - 2 * b);
+  fill(fillCol);
+  rect(x + b, y + b, w - 2 * b, h - 2 * b);
+}
+
+const borderSize = () => Math.max(2, Math.round(S * 0.75));
+
+function panel(lx, ly, lw, lh, borderCol = C.cyan) {
+  pixelBox(lx * S, ly * S, lw * S, lh * S, borderSize(), 'rgba(18,4,36,0.88)', borderCol);
+}
+
+function wrapText(str, maxW) {
+  const lines = [];
+  let line = '';
+  for (const word of str.split(' ')) {
+    const test = line ? `${line} ${word}` : word;
+    if (textWidth(test) > maxW && line) { lines.push(line); line = word; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function speechAnchor(npc) {
+  if (npc) return { x: npc.x, y: npc.top - 2 };
+  if (travelPhase() === 'flight') return { x: game.camX + 110, y: 56 };
+  if (bunnyInShip()) return { x: World.theme.shipX, y: shipTop() - 2 };
+  return { x: bunny.x, y: bunny.y - 18 };
+}
+
+// Bunny talks in a light bubble; aliens talk in a dark bubble with a name tag.
+function drawSpeechBubble() {
+  if (speech.life <= 0 || !speech.text || travelPhase() === 'map') return;
+  const npc = speech.speaker;
+  const style = npc
+    ? { bg: C.night, border: npc.tagColor, ink: C.white }
+    : { bg: '#fff4fb', border: C.ink, ink: C.ink };
+
+  textSize(FS);
+  textAlign(LEFT, TOP);
+  const padding = Math.round(FS * 0.7);
+  const lineH = Math.round(FS * 1.5);
+  const b = borderSize();
+  const lines = wrapText(speech.text, Math.min(FS * 20, width * 0.6));   // wrap the full line so the box doesn't jitter
+  const header = npc ? npc.name : null;
+  const rows = lines.length + (header ? 1 : 0);
+  const boxW = Math.max(...lines.map(l => textWidth(l)), header ? textWidth(header) : 0) + padding * 2;
+  const boxH = rows * lineH - (lineH - FS) + padding * 2;
+
+  const anchor = speechAnchor(npc);
+  const ax = (anchor.x - game.camX) * S;
+  const ay = anchor.y * S;
+  const bx = Math.round(clamp(ax - boxW / 2, b, width - boxW - b));
+  const by = Math.round(Math.max(b, ay - b * 3 - boxH));
+  pixelBox(bx, by, boxW, boxH, b, style.bg, style.border);
+
+  const tx = Math.round(clamp(ax, bx + b * 4, bx + boxW - b * 4));   // stepped tail
+  for (let i = 0; i < 3; i++) {
+    const outer = (3 - i) * 2 * b, inner = outer - 2 * b;
+    const ry = by + boxH - b + i * b;
+    fill(style.border); rect(tx - outer / 2, ry, outer, b);
+    if (inner > 0) { fill(style.bg); rect(tx - inner / 2, ry, inner, b); }
+  }
+
+  let row = 0;
+  if (header) { fill(npc.tagColor); text(header, bx + padding, by + padding); row = 1; }
+  fill(style.ink);
+  let remaining = Math.ceil(speech.shown);
+  lines.forEach((ln, i) => {
+    text(ln.slice(0, Math.max(0, remaining)), bx + padding, by + padding + (i + row) * lineH);
+    remaining -= ln.length + 1;
+  });
+}
+
+function drawHudText() {
+  const mood = currentMood();
+  uiText('TUMMY', 47, 12.5, game.hunger < 25 ? C.red : C.white);
+  uiText(`MOOD ${mood.label}`, 4, 21, mood.color);
+  if (isExplore()) {
+    const npcs = allNpcs();
+    const met = npcs.filter(n => n.met).length;
+    uiText(World.theme.short, 4, 3, World.theme.hudColor);
+    uiText(`FRIENDS ${met}/${npcs.length}`, VIEW_W - 4, 3, met === npcs.length ? C.green : C.white, 1, RIGHT);
+    uiText(`PLANETS ${game.visited.size}/${MAP_ORDER.length}`, VIEW_W - 4, 9, C.cyan, 1, RIGHT);
+    uiText('Q MENU  P PAUSE', VIEW_W - 4, 15, C.moonLight, 1, RIGHT);
+    return;
+  }
+  uiText(`SCORE ${pad(game.score)}`, VIEW_W - 4, 3, C.white, 1, RIGHT);
+  uiText(`WAVE ${game.wave}`, VIEW_W - 4, 9, C.cyan, 1, RIGHT);
+  uiText(`x${game.ammo}`, VIEW_W - 16, 16, game.ammo === 0 && blink(20) ? C.red : C.orange);
+}
+
+function drawPopups() {
+  for (const p of popups) {
+    if (p.life < 15 && p.life % 4 < 2) continue;
+    uiText(p.text, p.x - game.camX, p.y, p.col, 1, CENTER);
+  }
+}
+
+function drawBanner() {
+  const b = game.banner;
+  if (b.t > b.t0 - 30 && b.t % 8 < 4) return;   // flicker in
+  const size = b.title.length > 10 ? 2 : 3;
+  uiText(b.title, VIEW_W / 2, 48, C.yellow, size, CENTER);
+  uiText(b.sub, VIEW_W / 2, 60, C.cyan, 1, CENTER);
+}
+
+// Hints above nearby aliens / the rocket, and under the bunny.
+function drawInteractionHints() {
+  if (game.state !== 'play' || game.travel) return;
+  if (mouseInView() && mouseOnBunny() && blink(30)) {
+    uiText('FEED ME', bunny.x - game.camX, GROUND_Y + 4, C.hotPink, 1, CENTER);
+  }
+  if (!isExplore()) return;
+  const target = nearestTarget();
+  if (!target) return;
+  if (target.kind === 'ship') {
+    const x = World.theme.shipX - game.camX;
+    uiText('CARROT ROCKET', x, shipTop() - 11, C.orange, 1, CENTER);
+    if (blink(40)) uiText('E FLY', x, shipTop() - 6, C.yellow, 1, CENTER);
+    return;
+  }
+  const npc = target.npc;
+  if (speech.convo === npc) return;
+  const x = npc.x - game.camX;
+  uiText(npc.name, x, npc.top - 16, npc.tagColor, 1, CENTER);
+  if (blink(40)) uiText('E TALK', x, npc.top - 11, C.yellow, 1, CENTER);
+}
+
+function drawStarMapText(tr) {
+  const id = MAP_ORDER[tr.sel];
+  const theme = THEMES[id];
+  const npcs = game.npcsByWorld[id];
+  const here = id === World.id;
+  uiText('STAR MAP', VIEW_W / 2, 11, C.yellow, 2, CENTER);
+  uiText('where to, captain fluff?', VIEW_W / 2, 21, C.moonLight, 1, CENTER);
+  MAP_ORDER.forEach((pid, i) => {   // labels alternate rows so neighbours never overlap
+    const col = pid === World.id ? C.hotPink : i === tr.sel ? C.yellow : C.white;
+    uiText(THEMES[pid].short, MAP_X[i], MAP_Y + (i % 2 ? 19 : 13), col, 1, CENTER);
+  });
+  uiText(theme.name, VIEW_W / 2, 92, theme.hudColor, 2, CENTER);
+  uiText(theme.tagline, VIEW_W / 2, 102, C.cyan, 1, CENTER);
+  const visited = game.visited.has(id) ? '' : '   NEW!';
+  uiText(`FRIENDS ${npcs.filter(n => n.met).length}/${npcs.length}${visited}`, VIEW_W / 2, 109, C.white, 1, CENTER);
+  if (blink(40)) uiText(here ? 'YOU ARE HERE' : 'ENTER or CLICK to FLY', VIEW_W / 2, 119, here ? C.hotPink : C.yellow, 1, CENTER);
+  uiText('< > CHOOSE    Q CLOSE', VIEW_W / 2, 128, C.moonLight, 1, CENTER);
+}
+
+function drawFlightText(tr) {
+  const theme = THEMES[tr.dest];
+  uiText('NEXT STOP', VIEW_W / 2, 12, C.moonLight, 1, CENTER);
+  uiText(theme.name, VIEW_W / 2, 18, theme.hudColor, theme.name.length > 10 ? 2 : 3, CENTER);
+}
+
+function drawMenu() {
+  MENU.forEach((btn, i) => {
+    const selected = game.menuIndex === i;
+    pixelBox(btn.x * S, btn.y * S, btn.w * S, btn.h * S, borderSize(),
+             selected ? 'rgba(43,15,69,0.95)' : 'rgba(18,4,36,0.75)', selected ? btn.col : C.moonShade);
+    const cx = btn.x + btn.w / 2;
+    uiText(btn.label, cx, btn.y + 3.5, selected ? btn.col : C.moonLight, 1.5, CENTER);
+    uiText(btn.sub, cx, btn.y + 10.5, selected ? C.white : C.moonDark, 1, CENTER);
+    if (selected && blink(30)) uiText('>', btn.x - 5, btn.y + 5, btn.col, 1.5);
+  });
+}
+
+function menuButtonUnderMouse() {
+  const m = mouseScreen();
+  return MENU.findIndex(btn => pointInBox(m.x, m.y, btn));
+}
+
+function mapPlanetUnderMouse() {
+  const m = mouseScreen();
+  return MAP_X.findIndex(x => Math.abs(m.x - x) < 12 && Math.abs(m.y - MAP_Y) < 22);
+}
+
+function drawTitleScreen() {
+  rainbowText('MOODY MOON', VIEW_W / 2, 8, 3);
+  rainbowText('BUNNY', VIEW_W / 2, 20, 4);
+  uiText('~ a sassy space bunny adventure ~', VIEW_W / 2, 37, C.cyan, 1, CENTER);
+  uiText('MOVE A/D  JUMP W  FEED F  TALK E', VIEW_W / 2, 45, C.white, 1, CENTER);
+  uiText('THROW CARROT  CLICK or SPACE', VIEW_W / 2, 51, C.orange, 1, CENTER);
+  drawMenu();
+  uiText('ARROWS + ENTER, or CLICK   M MUTE', VIEW_W / 2, 81, C.moonLight, 1, CENTER);
+  uiText(`BEST ${pad(game.hiScore)}`, VIEW_W - 4, 137, C.hotPink, 1, RIGHT);
+}
+
+function drawGameOverScreen() {
+  panel(56, 20, 144, 66);
+  uiText('GAME OVER', VIEW_W / 2, 26, C.pink, 3, CENTER);
+  uiText(`SCORE  ${pad(game.score)}`, VIEW_W / 2, 41, C.white, 1, CENTER);
+  uiText(`BEST   ${pad(game.hiScore)}`, VIEW_W / 2, 48, game.newBest && blink(20) ? C.hotPink : C.yellow, 1, CENTER);
+  uiText(`REACHED WAVE ${game.wave}`, VIEW_W / 2, 55, C.cyan, 1, CENTER);
+  if (game.newBest) uiText('NEW BEST!', VIEW_W / 2, 62, C.green, 1, CENTER);
+  if (game.overT > 60) {
+    if (blink(40)) uiText('CLICK or ENTER to RETRY', VIEW_W / 2, 71, C.hotPink, 1, CENTER);
+    uiText('Q for MENU', VIEW_W / 2, 78, C.moonLight, 1, CENTER);
+  }
+}
+
+function drawRocketTip() {
+  panel(34, 24, 188, 58, C.orange);
+  image(SPR.carrotShip, 44 * S, 38 * S, SPR.carrotShip.width * 2 * S, SPR.carrotShip.height * 2 * S);   // big rocket icon
+  const cx = 144;
+  uiText('NEW! CARROT ROCKET', cx, 30, C.orange, 1.5, CENTER);
+  uiText('Fly to EVERY planet in', cx, 41, C.white, 1, CENTER);
+  uiText('the solar system and', cx, 47, C.white, 1, CENTER);
+  uiText('meet all-new aliens!', cx, 53, C.white, 1, CENTER);
+  uiText('Walk to the rocket and', cx, 62, C.yellow, 1, CENTER);
+  uiText('press E, or click it.', cx, 68, C.yellow, 1, CENTER);
+  if (blink(40)) uiText('PRESS ANY KEY', cx, 76, C.moonLight, 1, CENTER);
+}
+
+function drawPauseScreen() {
+  panel(70, 42, 116, 36);
+  uiText('PAUSED', VIEW_W / 2, 48, C.yellow, 2, CENTER);
+  uiText('P to resume', VIEW_W / 2, 61, C.white, 1, CENTER);
+  uiText('Q for menu', VIEW_W / 2, 68, C.moonLight, 1, CENTER);
+}
+
+function drawUI() {
+  noStroke();
+  textFont('Press Start 2P');
+  const phase = travelPhase();
+  if (phase === 'map') drawStarMapText(game.travel);
+  else if (phase === 'flight') drawFlightText(game.travel);
+  else if (game.state === 'title') drawTitleScreen();
+  else {
+    drawPopups();
+    drawHudText();
+    if (game.banner && game.state === 'play') drawBanner();
+    drawInteractionHints();
+  }
+  if (game.tip && game.state !== 'title') drawRocketTip();
+  if (game.state === 'paused') drawPauseScreen();
+  if (game.state === 'over') drawGameOverScreen();
+  drawSpeechBubble();
+  if (Sfx.muted) uiText('MUTED', VIEW_W / 2, 137, C.moonLight, 1, CENTER);
+}
+
+// ---------------------------------------------------------------------
+// 20. P5 LIFECYCLE
+// ---------------------------------------------------------------------
+function computeScale() {
+  S = Math.max(1, Math.floor(Math.min(windowWidth / VIEW_W, windowHeight / VIEW_H)));
+  FS = Math.max(8, 3 * S);
+}
+
+function setup() {
+  computeScale();
+  pixelDensity(1);
+  createCanvas(VIEW_W * S, VIEW_H * S);
+  noSmooth();
+  frameRate(60);
+
+  view = createGraphics(VIEW_W, VIEW_H);
+  view.pixelDensity(1);
+  view.noSmooth();
+  view.noStroke();
+
+  bakeSprites();
+  if (document.fonts) document.fonts.load('12px "Press Start 2P"');
+  goToMenu();
+}
+
+function draw() {
+  if (game.state === 'play') updatePlay();
+  else if (game.state !== 'paused') updateAmbient();
+  if (game.state !== 'paused') {
+    const dCam = updateCamera();
+    World.update(dCam);
+    updateSpeech();
+  }
+  if (game.state === 'title') {
+    const hovered = menuButtonUnderMouse();
+    if (hovered >= 0) game.menuIndex = hovered;
+  }
+  if (travelPhase() === 'map') {
+    const hovered = mapPlanetUnderMouse();
+    if (hovered >= 0) game.travel.sel = hovered;
+  }
+
+  renderWorld(view);
+  background(C.space0);
+  const shaking = game.shake > 0 && game.state !== 'paused';
+  const ox = shaking ? Math.round(random(-game.shake, game.shake)) * S : 0;
+  const oy = shaking ? Math.round(random(-game.shake, game.shake)) * S : 0;
+  image(view, ox, oy, width, height);
+  drawUI();
+  cursor(game.state === 'play' && !game.travel ? 'none' : 'pointer');
+}
+
+function windowResized() {
+  computeScale();
+  resizeCanvas(VIEW_W * S, VIEW_H * S);
+  noSmooth();
+}
+
+// ---------------------------------------------------------------------
+// 21. INPUT
+// ---------------------------------------------------------------------
+function keyPressed() {
+  Sfx.unlock();
+  const k = keyCode;
+  if (k === KEY.m) Sfx.muted = !Sfx.muted;
+  if (game.tip && game.state === 'play') { dismissTip(); return false; }
+
+  if (game.state === 'title') handleMenuKey(k);
+  else if (game.state === 'over') {
+    if (game.overT > 60 && (k === KEY.enter || k === KEY.space)) startGame('play');
+    if (k === KEY.q) goToMenu();
+  } else if (game.state === 'paused') {
+    if (k === KEY.p || k === KEY.esc) togglePause();
+    if (k === KEY.q) goToMenu();
+  } else if (game.state === 'play') {
+    if (travelPhase() === 'map') handleMapKey(k);
+    else if (!game.travel) handlePlayKey(k);
+  }
+
+  if ([KEY.space, KEY.left, KEY.up, KEY.right, KEY.down].includes(k)) return false;   // no page scroll
+}
+
+function handleMenuKey(k) {
+  if ([KEY.left, KEY.right, KEY.up, KEY.down, KEY.a, KEY.d, KEY.w, KEY.s].includes(k)) {
+    game.menuIndex = 1 - game.menuIndex;
+    Sfx.select();
+  }
+  if (k === KEY.one) game.menuIndex = 0;
+  if (k === KEY.two) game.menuIndex = 1;
+  if ([KEY.enter, KEY.space, KEY.one, KEY.two].includes(k)) startGame(MENU[game.menuIndex].mode);
+}
+
+function handleMapKey(k) {
+  const tr = game.travel;
+  const n = MAP_ORDER.length;
+  if (k === KEY.left || k === KEY.a) { tr.sel = (tr.sel + n - 1) % n; Sfx.select(); }
+  if (k === KEY.right || k === KEY.d) { tr.sel = (tr.sel + 1) % n; Sfx.select(); }
+  if (k === KEY.enter || k === KEY.space || k === KEY.e) chooseDestination(tr.sel);
+  if (k === KEY.q || k === KEY.esc) closeStarMap();
+}
+
+function handlePlayKey(k) {
+  if (k === KEY.p || k === KEY.esc) { togglePause(); return; }
+  if (k === KEY.up || k === KEY.w) bunny.jump();
+  if (k === KEY.space) throwAuto();
+  if (k === KEY.f) feedBunny();
+
+  if (!isExplore()) {
+    if (k === KEY.e) feedBunny();
+    return;
+  }
+  if (k === KEY.q) { goToMenu(); return; }
+  if (k === KEY.e || k === KEY.enter) {
+    if (speech.convo) { talkTo(speech.convo); return; }
+    const target = nearestTarget();
+    if (target && target.kind === 'ship') openStarMap();
+    else if (target) talkTo(target.npc);
+    else if (k === KEY.e) feedBunny();
+  }
+}
+
+function mousePressed() {
+  Sfx.unlock();
+  if (game.state === 'title') {
+    const i = menuButtonUnderMouse();
+    if (i >= 0) startGame(MENU[i].mode);
+    return;
+  }
+  if (game.state === 'over') { if (game.overT > 60) startGame('play'); return; }
+  if (game.state !== 'play') return;
+  if (game.tip) { dismissTip(); return; }
+  if (game.travel) {
+    if (game.travel.phase === 'map') {
+      const i = mapPlanetUnderMouse();
+      if (i >= 0) chooseDestination(i);
+    }
+    return;
+  }
+
+  if (mouseOnBunny()) { feedBunny(); return; }
+  if (isExplore()) {
+    const npc = npcUnderMouse();
+    const near = x => Math.abs(x - bunny.x) < 60;
+    if (npc) {
+      if (near(npc.x)) talkTo(npc);
+      else popup('WALK CLOSER!', npc.tagColor, npc.x, npc.top - 6);
+      return;
+    }
+    if (mouseOnShip()) {
+      if (near(World.theme.shipX)) openStarMap();
+      else popup('WALK CLOSER!', C.orange, World.theme.shipX, shipTop() - 6);
+      return;
+    }
+  }
+  const m = mouseWorld();
+  throwAt(m.x, m.y);
+}
+</script>
+</body>
+</html>
